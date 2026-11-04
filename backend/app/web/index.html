@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentOrch · 联调台</title>
+<style>
+  :root {
+    --bg: #080d1a;
+    --panel: #0f1729;
+    --panel-2: #131d33;
+    --line: #1e2b47;
+    --text: #e8eeff;
+    --muted: #8fa1c4;
+    --accent: #4f8cff;
+    --accent-2: #8b5cf6;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background:
+      radial-gradient(900px 500px at 15% -10%, rgba(79,140,255,.16), transparent 60%),
+      radial-gradient(700px 400px at 95% 0%, rgba(139,92,246,.12), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 18px 28px; border-bottom: 1px solid var(--line);
+    background: rgba(8, 13, 26, .72); backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 40px; height: 40px; border-radius: 12px;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    font-size: 20px; color: #fff; box-shadow: 0 6px 18px rgba(79,140,255,.35);
+  }
+  .brand h1 { margin: 0; font-size: 18px; letter-spacing: .3px; }
+  .brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .status { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 4px rgba(251,191,36,.12); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(52,211,153,.14); }
+  .dot.bad { background: var(--err); box-shadow: 0 0 0 4px rgba(248,113,113,.14); }
+
+  /* ---------- 布局 ---------- */
+  .layout {
+    flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 330px;
+    gap: 18px; padding: 18px 28px 22px; max-width: 1500px; width: 100%; margin: 0 auto;
+  }
+  .chat-panel {
+    display: flex; flex-direction: column; min-height: 0;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(19,29,51,.6), rgba(15,23,41,.6));
+    overflow: hidden;
+  }
+  .messages { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+  .messages::-webkit-scrollbar { width: 8px; }
+  .messages::-webkit-scrollbar-thumb { background: #22304d; border-radius: 8px; }
+
+  .empty { margin: auto; text-align: center; color: var(--muted); max-width: 420px; line-height: 1.8; }
+  .empty strong { color: var(--text); font-weight: 600; }
+  .empty .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    padding: 7px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; transition: .15s;
+  }
+  .chip:hover { color: var(--text); border-color: rgba(79,140,255,.55); }
+
+  .msg { display: flex; gap: 10px; max-width: 86%; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .avatar {
+    flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+    font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+  }
+  .msg.user .avatar { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: 0; }
+  .bubble {
+    padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.7;
+    background: var(--panel-2); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word;
+  }
+  .msg.user .bubble { background: rgba(79,140,255,.14); border-color: rgba(79,140,255,.3); }
+  .bubble.pending { color: var(--muted); }
+  .meta { margin-top: 7px; font-size: 11px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+  .reasoning {
+    margin-bottom: 9px; padding: 9px 11px; border-left: 2px solid rgba(139,92,246,.6);
+    background: rgba(139,92,246,.07); border-radius: 0 8px 8px 0; color: var(--muted); font-size: 12.5px;
+  }
+  .reasoning summary { cursor: pointer; color: #b7a6ff; }
+
+  /* ---------- 输入区 ---------- */
+  .composer { border-top: 1px solid var(--line); padding: 14px 16px 16px; background: rgba(8,13,26,.45); }
+  .composer textarea {
+    width: 100%; resize: none; min-height: 56px; max-height: 220px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; font: inherit; font-size: 14px; line-height: 1.6; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer textarea:focus { border-color: rgba(79,140,255,.65); box-shadow: 0 0 0 3px rgba(79,140,255,.12); }
+  .composer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 12px; }
+  .hint { font-size: 12px; color: var(--muted); }
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); padding: 9px 16px; transition: .15s;
+  }
+  button:hover:not(:disabled) { border-color: rgba(79,140,255,.55); }
+  button.primary {
+    border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff; font-weight: 600; padding: 10px 22px; box-shadow: 0 6px 16px rgba(79,140,255,.25);
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; }
+
+  /* ---------- 侧栏 ---------- */
+  .side { display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 5px 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { text-align: right; word-break: break-all; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); }
+  .badge.live { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+  .badge.mock { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+  .badge.off { color: var(--err); border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
+
+  .field { margin-top: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  select, input[type="text"] {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 13px; outline: none;
+  }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .switch { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 7px 0; }
+  .switch input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .tip { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0; padding-left: 16px; }
+  .tip li { margin-bottom: 5px; }
+
+  @media (max-width: 960px) {
+    .layout { grid-template-columns: 1fr; padding: 14px; }
+    .side { overflow: visible; }
+    .msg { max-width: 95%; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>AgentOrch</h1>
+        <p>多智能体编排平台 · FastAPI × DeepSeek 联调台</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">正在连接后端…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat-panel">
+      <div id="messages" class="messages">
+        <div class="empty" id="emptyState">
+          <strong>骨架已跑通，先聊一句试试。</strong><br />
+          这里验证 FastAPI 与 DeepSeek 的链路：普通调用、SSE 流式、错误处理。<br />
+          下一步再往上叠 Agent 团队、DAG 工作流与调度引擎。
+          <div class="chips">
+            <span class="chip" data-prompt="用三句话说明什么是多智能体编排">多智能体编排是什么？</span>
+            <span class="chip" data-prompt="给我一个学生成绩管理系统的后端 API 设计草案">设计一个后端 API</span>
+            <span class="chip" data-prompt="用 JSON 返回 {&quot;status&quot;:&quot;ok&quot;}">测试 JSON 模式</span>
+          </div>
+        </div>
+      </div>
+
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="输入消息…（Enter 发送，Shift + Enter 换行）"></textarea>
+        <div class="composer-actions">
+          <span class="hint" id="hint">DeepSeek 通道就绪后即可对话</span>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="ghost" id="clearBtn">清空</button>
+            <button type="submit" class="primary" id="sendBtn">发送</button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <aside class="side">
+      <div class="card">
+        <h2>连接状态</h2>
+        <div class="kv"><span>模式</span><span id="kvMode">—</span></div>
+        <div class="kv"><span>模型</span><span id="kvModel">—</span></div>
+        <div class="kv"><span>延迟</span><span id="kvLatency">—</span></div>
+        <div class="kv"><span>用量</span><span id="kvUsage">—</span></div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button id="pingBtn" style="flex:1">连通性探测</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>调用参数</h2>
+        <div class="field">
+          <label for="model">模型</label>
+          <select id="model"></select>
+        </div>
+        <div class="field">
+          <label for="system">系统提示词</label>
+          <input id="system" type="text" value="你是 AgentOrch 平台的内置助手，回答简洁、准确。" />
+        </div>
+        <div class="field">
+          <label for="temperature">温度 <span id="tempValue">0.7</span></label>
+          <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7" />
+        </div>
+        <div class="switch"><span>流式输出</span><input id="stream" type="checkbox" checked /></div>
+        <div class="switch"><span>JSON 模式</span><input id="jsonMode" type="checkbox" /></div>
+      </div>
+
+      <div class="card">
+        <h2>接口清单</h2>
+        <div class="kv"><span>GET</span><span>/api/v1/health</span></div>
+        <div class="kv"><span>POST</span><span>/api/v1/llm/ping</span></div>
+        <div class="kv"><span>POST</span><span>/api/v1/chat</span></div>
+        <div class="kv"><span>POST</span><span>/api/v1/chat/stream</span></div>
+        <p class="tip" style="margin-top:10px;padding-left:0">
+          完整文档：<a href="/docs" style="color:var(--accent)">/docs</a>
+        </p>
+      </div>
+    </aside>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const els = {
+  messages: $("messages"), empty: $("emptyState"), input: $("input"),
+  sendBtn: $("sendBtn"), clearBtn: $("clearBtn"), pingBtn: $("pingBtn"),
+  model: $("model"), system: $("system"), temperature: $("temperature"),
+  tempValue: $("tempValue"), stream: $("stream"), jsonMode: $("jsonMode"),
+  statusDot: $("statusDot"), statusText: $("statusText"), hint: $("hint"),
+  kvMode: $("kvMode"), kvModel: $("kvModel"), kvLatency: $("kvLatency"), kvUsage: $("kvUsage"),
+};
+
+const state = { history: [], busy: false, models: [] };
+
+/* ---------------- 基础渲染 ---------------- */
+function setStatus(kind, text) {
+  els.statusDot.className = "dot" + (kind ? " " + kind : "");
+  els.statusText.textContent = text;
+}
+
+function scrollToBottom() {
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function addMessage(role, text) {
+  els.empty?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const avatar = document.createElement("div");
+  avatar.className = "avatar";
+  avatar.textContent = role === "user" ? "我" : "AI";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + (text ? "" : " pending");
+  const content = document.createElement("div");
+  content.className = "content";
+  content.textContent = text || "…";
+  bubble.append(content);
+  wrap.append(avatar, bubble);
+  els.messages.append(wrap);
+  scrollToBottom();
+  return { wrap, bubble, content };
+}
+
+function addMeta(bubble, parts) {
+  if (!parts.length) return;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = parts.join(" · ");
+  bubble.append(meta);
+}
+
+/* ---------------- 启动：拉健康状态与模型 ---------------- */
+async function boot() {
+  try {
+    const health = await fetch("/api/v1/health").then((r) => r.json());
+    const llm = health.llm;
+    const modeText = { live: "真实调用", mock: "本地模拟", unconfigured: "未配置" }[llm.mode] || llm.mode;
+    els.kvMode.innerHTML = `<span class="badge ${llm.mode}">${modeText}</span>`;
+    els.kvModel.textContent = llm.model;
+    setStatus(llm.mode === "live" ? "ok" : llm.mode === "mock" ? "" : "bad",
+      llm.mode === "live" ? "DeepSeek 通道就绪" : llm.mode === "mock" ? "Mock 模式（不发真实请求）" : "未配置 API Key");
+    els.hint.textContent = llm.mode === "live" ? "模型已就绪，Enter 发送" : "配置 DEEPSEEK_API_KEY 后可真实调用";
+
+    state.models = await fetch("/api/v1/llm/models").then((r) => r.json());
+    els.model.innerHTML = state.models
+      .map((m) => `<option value="${m.id}">${m.label}</option>`)
+      .join("");
+  } catch (err) {
+    console.error(err);
+    setStatus("bad", "后端不可用");
+    els.hint.textContent = "无法连接后端，请确认 uvicorn 已启动";
+  }
+}
+
+/* ---------------- 连通性探测 ---------------- */
+async function ping() {
+  els.pingBtn.disabled = true;
+  els.pingBtn.textContent = "探测中…";
+  try {
+    const started = performance.now();
+    const resp = await fetch("/api/v1/llm/ping", { method: "POST" });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data?.error?.message || `HTTP ${resp.status}`);
+    const rtt = Math.round(performance.now() - started);
+    els.kvLatency.textContent = `${data.latency_ms} ms（往返 ${rtt} ms）`;
+    els.kvUsage.textContent = `${data.usage.total_tokens} tokens`;
+    els.hint.textContent = `探测成功：${data.reply} · ${data.mode}`;
+    setStatus(data.mode === "live" ? "ok" : "", data.mode === "live" ? "DeepSeek 通道就绪" : "Mock 模式");
+  } catch (err) {
+    els.kvLatency.textContent = "—";
+    els.hint.textContent = "探测失败：" + err.message;
+    setStatus("bad", "连接失败");
+  } finally {
+    els.pingBtn.disabled = false;
+    els.pingBtn.textContent = "连通性探测";
+  }
+}
+
+/* ---------------- 发送 ---------------- */
+function buildPayload() {
+  const messages = [];
+  const sys = els.system.value.trim();
+  if (sys) messages.push({ role: "system", content: sys });
+  messages.push(...state.history);
+  return {
+    messages,
+    model: els.model.value || null,
+    temperature: parseFloat(els.temperature.value),
+    json_mode: els.jsonMode.checked,
+    stream: els.stream.checked,
+  };
+}
+
+async function send(text) {
+  if (state.busy) return;
+  state.busy = true;
+  els.sendBtn.disabled = true;
+
+  addMessage("user", text);
+  state.history.push({ role: "user", content: text });
+
+  const { bubble: replyBubble, content: replyContent } = addMessage("assistant", "");
+  const reasoningBox = document.createElement("div");
+  reasoningBox.className = "reasoning";
+  reasoningBox.hidden = true;
+  reasoningBox.innerHTML = '<div style="font-size:11px;color:#b7a6ff;margin-bottom:4px">推理过程</div><div class="reasoning-body"></div>';
+  replyBubble.prepend(reasoningBox);
+
+  let content = "";
+  let reasoning = "";
+  let meta = [];
+
+  const applyDelta = (delta) => {
+    content += delta;
+    replyContent.textContent = content;
+    scrollToBottom();
+  };
+
+  try {
+    const payload = buildPayload();
+    if (payload.stream) {
+      const resp = await fetch("/api/v1/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null);
+        throw new Error(err?.error?.message || `HTTP ${resp.status}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index;
+        while ((index = buffer.indexOf("\n\n")) >= 0) {
+          const raw = buffer.slice(0, index).trim();
+          buffer = buffer.slice(index + 2);
+          if (!raw.startsWith("data:")) continue;
+          const event = JSON.parse(raw.slice(5).trim());
+          if (event.type === "delta") applyDelta(event.delta);
+          else if (event.type === "reasoning") {
+            reasoning += event.delta;
+            reasoningBox.hidden = false;
+            reasoningBox.querySelector(".reasoning-body").textContent = reasoning;
+            scrollToBottom();
+          } else if (event.type === "error") {
+            throw new Error(event.message);
+          } else if (event.type === "done") {
+            els.kvLatency.textContent = `${event.latency_ms} ms`;
+            meta = [
+              payload.model || "deepseek",
+              `${event.latency_ms} ms`,
+              `${event.usage?.total_tokens ?? 0} tokens`,
+              event.mode === "mock" ? "mock" : "",
+            ].filter(Boolean);
+          }
+        }
+      }
+    } else {
+      const resp = await fetch("/api/v1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error?.message || `HTTP ${resp.status}`);
+      content = data.content;
+      replyContent.textContent = content;
+      els.kvLatency.textContent = `${data.latency_ms} ms`;
+      if (data.reasoning_content) {
+        reasoningBox.hidden = false;
+        reasoningBox.querySelector(".reasoning-body").textContent = data.reasoning_content;
+      }
+      meta = [
+        data.model,
+        `${data.latency_ms} ms`,
+        `${data.usage?.total_tokens ?? 0} tokens`,
+        data.mode === "mock" ? "mock" : "",
+      ].filter(Boolean);
+    }
+
+    replyBubble.classList.remove("pending");
+    if (!content) replyContent.textContent = "（空响应）";
+    addMeta(replyBubble, meta);
+    state.history.push({ role: "assistant", content });
+    els.kvUsage.textContent = meta.find((m) => m.endsWith("tokens")) || "—";
+  } catch (err) {
+    replyBubble.classList.remove("pending");
+    replyContent.textContent = "⚠ " + err.message;
+    replyBubble.style.borderColor = "rgba(248,113,113,.45)";
+    replyBubble.style.color = "#fca5a5";
+    setStatus("bad", "调用失败");
+    els.hint.textContent = "调用失败：" + err.message;
+  } finally {
+    state.busy = false;
+    els.sendBtn.disabled = false;
+    els.input.focus();
+  }
+}
+
+/* ---------------- 事件绑定 ---------------- */
+document.getElementById("composer").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = els.input.value.trim();
+  if (!text) return;
+  els.input.value = "";
+  send(text);
+});
+
+els.input.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    document.getElementById("composer").requestSubmit();
+  }
+});
+
+els.input.addEventListener("input", () => {
+  els.input.style.height = "auto";
+  els.input.style.height = Math.min(els.input.scrollHeight, 220) + "px";
+});
+
+els.clearBtn.addEventListener("click", () => {
+  state.history = [];
+  els.messages.innerHTML = "";
+  els.empty = null;
+  els.hint.textContent = "已清空，继续输入";
+});
+
+els.pingBtn.addEventListener("click", ping);
+
+els.temperature.addEventListener("input", () => {
+  els.tempValue.textContent = els.temperature.value;
+});
+
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    els.input.value = chip.dataset.prompt;
+    els.input.focus();
+  });
+});
+
+boot();
+</script>
+</body>
+</html>
