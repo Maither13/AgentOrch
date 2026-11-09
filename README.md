@@ -1,11 +1,11 @@
 # AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
-> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** 已完成。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** 已完成。
 
-第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 在此之上定义了
-6 个固定角色、写死工具权限，并用一份 JSON 描述团队。这两层是后续 DAG 工作流、
-调度引擎与 Self-Loop 的底座。
+第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 定义了 6 个固定角色、
+写死工具权限，并用一份 JSON 描述团队；模块 2 在此之上实现了
+「任务清单 → 依赖检查 → 拓扑排序 → 顺序执行」的最小调度闭环。
 
 ![联调台](docs/console.png)
 
@@ -22,9 +22,12 @@
 | 工具权限 | 每个角色写死 `allowed_tools`，import 时校验，越权抛 403 |
 | 团队配置 | `teams/software_team.json`：定义队长与成员映射，启动时装配并校验 |
 | 单 Agent 试跑 | `POST /agents/{id}/run` 与 CLI，验证「prompt + 调 API」链路 |
+| 任务调度器 | 任务清单 + 依赖检查（含环检测）+ 拓扑排序 + 顺序执行 |
+| 运行记录 | 内存存储任务状态、耗时、token 与输出，支持运行详情查询 |
+| 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 27 个用例，覆盖链路、角色、团队配置校验与工具权限 |
+| 单元测试 | 39 个用例，覆盖链路、角色、团队校验、依赖检查与调度状态机 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -95,6 +98,55 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 
 响应包含 `content`、`model`、`usage`、`latency_ms`、`allowed_tools`，便于后续调度与审计。
 
+## 模块 2：任务调度器
+
+输入是一张任务清单，调度器依次做：**依赖检查 → 拓扑排序 → 顺序执行**。
+
+```json
+{
+  "goal": "做一个学生成绩管理系统的后端 API",
+  "tasks": [
+    { "id": "T1", "title": "需求规格", "owner": "product_manager", "goal": "写需求文档" },
+    { "id": "T2", "title": "技术设计", "owner": "architect", "goal": "写设计文档", "depends_on": ["T1"] },
+    { "id": "T3", "title": "编码实现", "owner": "developer", "goal": "实现接口", "depends_on": ["T2"] }
+  ]
+}
+```
+
+### 依赖检查（执行前）
+
+- 任务 id 唯一、负责人必须在当前团队中
+- 依赖必须存在、不能依赖自己、不能重复声明
+- Kahn 拓扑排序检测环，有环直接 400（`task_cycle`）
+- 单次运行任务数上限 20
+
+`POST /api/v1/runs/validate` 只校验不执行，返回拓扑序，便于前端画图或人工确认。
+
+### 顺序执行
+
+- 按拓扑序逐个执行，同一时刻只有一个任务在跑，同层任务也不会并行
+- 上游任务的输出自动拼进下游 `context`（单条截断 6000 字、总量 24000 字）
+- 任务失败：下游标记 `skipped`，无关任务继续执行；整个 run 最终为 `failed`
+- 每个任务记录状态、耗时、token 用量、模型与错误信息
+- `POST /api/v1/runs` 默认异步执行（返回 202 + run_id），加 `?wait=true` 则等执行完返回
+
+状态机：任务 `pending → running → completed / failed / skipped`；
+运行 `pending → running → completed / failed`。
+
+### 真实运行示例
+
+3 个任务（产品经理 → 架构师 → 开发）顺序执行，总耗时 22.2s、6945 tokens：
+架构师输出引用了上游需求里的 AC1，开发输出沿用了架构师定义的
+`students / courses / grades` 三张表——依赖上下文确实传递到了下游。
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\",\"tasks\":[ ... ]}"
+```
+
+已知限制：运行记录存在内存里，进程重启即丢失；并发、重试、断点续跑留给下一阶段。
+
 ## 目录结构
 
 ```
@@ -109,13 +161,18 @@ AgentOrch/
 │   │   │       ├── router.py    # 路由聚合，后续挂 workflows/tasks/runs
 │   │   │       ├── system.py    # 健康检查、模型列表、LLM ping
 │   │   │       ├── chat.py      # 普通对话 + SSE 流式对话
-│   │   │       └── agents.py    # 角色、工具、团队、单 Agent 试跑
+│   │   │       ├── agents.py    # 角色、工具、团队、单 Agent 试跑
+│   │   │       └── runs.py      # 依赖校验、创建运行、查询运行
 │   │   ├── agents/
 │   │   │   ├── base.py          # BaseAgent / AgentSpec / AgentRunResult
 │   │   │   ├── tools.py         # 工具注册表与权限异常
 │   │   │   ├── registry.py      # 团队装配与配置校验
 │   │   │   ├── teams/software_team.json
 │   │   │   └── roles/           # 6 个角色类（prompt 都在这里）
+│   │   ├── orchestration/
+│   │   │   ├── models.py        # TaskSpec / TaskState / RunState
+│   │   │   ├── scheduler.py     # 依赖校验、拓扑排序、顺序执行
+│   │   │   └── store.py         # 内存运行记录
 │   │   ├── core/                # config / errors / logging
 │   │   ├── llm/client.py        # DeepSeek 客户端封装（唯一接触 openai SDK 的地方）
 │   │   └── web/index.html       # 零构建联调台
@@ -177,6 +234,10 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | GET | `/api/v1/team` | 当前团队配置与成员详情（含 prompt） |
 | GET | `/api/v1/agents/{agent_id}` | 单个 Agent 配置 |
 | POST | `/api/v1/agents/{agent_id}/run` | 试跑单个 Agent |
+| POST | `/api/v1/runs/validate` | 依赖检查，只返回拓扑序不执行 |
+| POST | `/api/v1/runs` | 创建并执行运行（`?wait=true` 同步等待） |
+| GET | `/api/v1/runs` | 最近运行列表（摘要，不含输出） |
+| GET | `/api/v1/runs/{run_id}` | 运行详情（含每个任务的输出与用量） |
 
 ### 调用示例
 
@@ -250,14 +311,18 @@ cd AgentOrch\backend
   `{code, message}`，便于调度引擎按错误类型决定重试 / 降级。
 - **连接复用**：`AsyncOpenAI` 在 lifespan 中创建一次、全局共享，避免每请求建连。
 - **Mock 是一等公民**：没有 Key 也能演示完整链路，评审复现成本低。
+- **依赖先校验再执行**：调度器不信任输入，环、悬空依赖、未知负责人在建 run 前就拒绝，
+  执行阶段不需要再处理这类错误。
+- **失败只影响下游**：一个任务失败不会拖垮整张图，无关分支继续跑，
+  失败原因写进 `TaskState.error`，便于 Self-Loop 后续生成修复任务。
 
 ## 下一步
 
-1. **工作流编排**：`WorkflowStep` + DAG 校验、拓扑分层、`asyncio.gather` 并行执行
-2. **任务调度引擎**：三态状态机、`attempt_id` 原子认领、事件驱动派发、超时回收
-3. **Self-Loop 控制器**：执行 → 验证 → 修复循环，最大轮次与升级策略
+1. **并行调度**：无依赖任务并发执行（信号量限流），把「顺序」升级成「分层并行」
+2. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
+3. **Self-Loop 控制器**：失败任务自动生成修复任务并重跑，最大轮次与升级策略
 4. **结果验证**：结构化验收记录、双轨验证（自动化测试 + 评审 Agent）
 5. **实时推送**：WebSocket 事件总线，前端监控面板接入
-6. **持久化**：SQLite（任务、团队配置、日志），后续迁移 PostgreSQL
+6. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
 
 > 详细设计见《AgentOrch_设计方案.docx》。

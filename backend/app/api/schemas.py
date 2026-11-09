@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from app.orchestration.models import RunStatus, TaskSpec
 
 Role = Literal["system", "user", "assistant"]
 
@@ -126,3 +129,29 @@ class AgentRunResponse(BaseModel):
     usage: UsageOut
     latency_ms: int
     allowed_tools: list[str]
+
+
+# --------------------------------------------------------------------------- #
+# 任务调度
+# --------------------------------------------------------------------------- #
+class RunCreate(BaseModel):
+    goal: str | None = Field(default=None, max_length=2_000)
+    tasks: list[TaskSpec] = Field(min_length=1, max_length=20)
+
+
+class ValidateResponse(BaseModel):
+    valid: bool = True
+    order: list[str]
+    tasks: list[TaskSpec]
+
+
+class RunSummary(BaseModel):
+    id: str
+    status: RunStatus
+    goal: str | None = None
+    total: int
+    completed: int
+    failed: int
+    skipped: int
+    created_at: datetime
+    finished_at: datetime | None = None

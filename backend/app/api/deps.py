@@ -7,6 +7,7 @@ from fastapi import Request
 from app.agents.registry import Team
 from app.core.config import Settings, get_settings
 from app.llm.client import DeepSeekClient
+from app.orchestration.store import RunStore
 
 
 def get_llm(request: Request) -> DeepSeekClient:
@@ -17,6 +18,11 @@ def get_llm(request: Request) -> DeepSeekClient:
 def get_team(request: Request) -> Team:
     """lifespan 中装配好的默认团队。"""
     return request.app.state.team
+
+
+def get_run_store(request: Request) -> RunStore:
+    """进程内运行记录存储。"""
+    return request.app.state.runs
 
 
 def get_app_settings() -> Settings:

@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.logging import setup_logging
 from app.llm.client import DeepSeekClient
+from app.orchestration.store import RunStore
 
 logger = logging.getLogger("agentorch")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
     setup_logging(settings)
     app.state.llm = DeepSeekClient(settings)
     app.state.team = load_team(app.state.llm, settings.default_team)
+    app.state.runs = RunStore()
     logger.info(
         "AgentOrch 启动 | env=%s | mode=%s | 团队=%s(%d 人) | docs=http://%s:%s/docs",
         settings.environment,

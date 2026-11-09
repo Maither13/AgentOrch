@@ -1,10 +1,11 @@
-"""v1 路由聚合。后续 workflows / tasks / runs 模块在此挂载。"""
+"""v1 路由聚合。后续 workflows / tasks 模块在此挂载。"""
 
 from fastapi import APIRouter
 
-from app.api.v1 import agents, chat, system
+from app.api.v1 import agents, chat, runs, system
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(chat.router)
 api_router.include_router(agents.router)
+api_router.include_router(runs.router)
