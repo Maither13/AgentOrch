@@ -224,6 +224,8 @@ cd AgentOrch\backend
 
 实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
 评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
+另外用一个「首轮故意缺测试」的 2 任务场景实测了 Self-Loop：评审驳回 → 自动追加
+`R1-fix` / `R1-review` → 补齐测试后复评通过，`rounds=1`。
 
 ## 目录结构
 

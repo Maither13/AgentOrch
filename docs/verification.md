@@ -120,3 +120,19 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 评审驳回与轮次耗尽的路径由 `tests/test_self_loop.py` 用可脚本化的假 Agent 确定性覆盖
 （真实模型下评审结论有随机性，不适合作为回归断言）。
 
+### Self-Loop 实测（真实模型）
+
+手动构造 2 个任务：T1 开发「只写 `app/health.py`，不要写测试」，T2 评审「必须同时存在
+`app/health.py` 和 `tests/test_health.py`，缺一个就驳回」。结果：
+
+```
+T1         completed  → 只落盘 app/health.py
+T2         completed  → 总体结论：驳回（缺 tests/test_health.py）
+Self-Loop: 第 1 轮修复，追加 2 个任务（R1-fix, R1-review）
+R1-fix     completed  → 补齐 tests/test_health.py、pytest.ini
+R1-review  completed  → 总体结论：有条件通过
+最终：status=completed, acceptance=passed, rounds=1, needs_human=false
+```
+
+日志中的 context 长度：47 / 156 / 170 / 313 字符。
+
