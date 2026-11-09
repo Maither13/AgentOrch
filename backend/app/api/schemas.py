@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.orchestration.models import RunStatus, TaskSpec
 
@@ -135,8 +135,30 @@ class AgentRunResponse(BaseModel):
 # 任务调度
 # --------------------------------------------------------------------------- #
 class RunCreate(BaseModel):
+    """tasks 与 goal 至少给一个：给 tasks 直接执行，只给 goal 由队长先拆解。"""
+
     goal: str | None = Field(default=None, max_length=2_000)
-    tasks: list[TaskSpec] = Field(min_length=1, max_length=20)
+    tasks: list[TaskSpec] | None = Field(default=None, min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def _require_input(self) -> "RunCreate":
+        if not self.tasks and not (self.goal and self.goal.strip()):
+            raise ValueError("tasks 与 goal 至少提供一个")
+        return self
+
+
+class PlanRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2_000)
+    context: str | None = Field(default=None, max_length=20_000)
+
+
+class PlanResponse(BaseModel):
+    tasks: list[TaskSpec]
+    order: list[str]
+    raw: str
+    mode: str
+    latency_ms: int
+    usage: UsageOut
 
 
 class ValidateResponse(BaseModel):
@@ -145,10 +167,15 @@ class ValidateResponse(BaseModel):
     tasks: list[TaskSpec]
 
 
+class TaskListRequest(BaseModel):
+    tasks: list[TaskSpec] = Field(min_length=1, max_length=20)
+
+
 class RunSummary(BaseModel):
     id: str
     status: RunStatus
     goal: str | None = None
+    plan_source: str = "manual"
     total: int
     completed: int
     failed: int

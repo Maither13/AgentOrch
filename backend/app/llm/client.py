@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -272,6 +273,62 @@ class DeepSeekClient:
         last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         if last_user.strip().lower().startswith("ping"):
             return "pong"
+
+        # 队长角色：返回一份可被调度器解析的假 DAG，方便离线跑通「拆解 → 顺序执行」
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        if "队长 Agent（Captain）" in system:
+            plan = {
+                "tasks": [
+                    {
+                        "id": "T1",
+                        "title": "需求规格",
+                        "goal": "梳理功能列表、接口与验收标准",
+                        "owner": "product_manager",
+                        "depends_on": [],
+                        "deliverable": "需求文档",
+                    },
+                    {
+                        "id": "T2",
+                        "title": "技术设计",
+                        "goal": "给出表结构、模块划分与接口契约",
+                        "owner": "architect",
+                        "depends_on": ["T1"],
+                        "deliverable": "技术设计文档",
+                    },
+                    {
+                        "id": "T3",
+                        "title": "编码实现",
+                        "goal": "按设计实现接口代码",
+                        "owner": "developer",
+                        "depends_on": ["T2"],
+                        "deliverable": "代码文件",
+                    },
+                    {
+                        "id": "T4",
+                        "title": "测试验证",
+                        "goal": "编写并运行 pytest 用例",
+                        "owner": "tester",
+                        "depends_on": ["T3"],
+                        "deliverable": "测试报告",
+                    },
+                    {
+                        "id": "T5",
+                        "title": "评审验收",
+                        "goal": "对照验收标准给出结论",
+                        "owner": "reviewer",
+                        "depends_on": ["T4"],
+                        "deliverable": "验收记录",
+                    },
+                ],
+                "risks": ["MOCK 模式仅演示流程，未真实执行"],
+            }
+            return (
+                "【MOCK 模式】队长拆解（本地模拟）\n\n"
+                "```json\n"
+                + json.dumps(plan, ensure_ascii=False, indent=2)
+                + "\n```"
+            )
+
         return (
             "【MOCK 模式】这是本地模拟回复，未调用真实模型。\n\n"
             f"收到 {len(messages)} 条消息，最后一条用户输入：{last_user[:120]}"

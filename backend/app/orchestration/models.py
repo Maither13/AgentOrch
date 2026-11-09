@@ -71,6 +71,9 @@ class RunState(BaseModel):
     id: str
     status: RunStatus = RunStatus.pending
     goal: str | None = None
+    # manual：调用方直接给任务清单；captain：由队长拆解生成
+    plan_source: str = "manual"
+    planning_ms: int | None = None
     tasks: list[TaskState]
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None

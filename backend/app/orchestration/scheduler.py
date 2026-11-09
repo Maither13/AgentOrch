@@ -29,9 +29,10 @@ from app.orchestration.models import (
 logger = logging.getLogger(__name__)
 
 MAX_TASKS = 20
-# 单个上游产物和总上下文的上限，避免 prompt 爆炸
-MAX_DEP_CONTEXT_CHARS = 6_000
-MAX_TOTAL_CONTEXT_CHARS = 24_000
+# 单个上游产物和总上下文的上限，避免 prompt 爆炸。
+# 代码类产出动辄上万字，上限给得比文档场景宽；真正解耦要靠工具读写文件，而不是靠拼 prompt。
+MAX_DEP_CONTEXT_CHARS = 30_000
+MAX_TOTAL_CONTEXT_CHARS = 80_000
 
 
 # --------------------------------------------------------------------------- #
@@ -195,8 +196,12 @@ def build_context(dependencies: list[TaskState]) -> str:
         if not dep.output:
             continue
         text = dep.output.strip()
-        if len(text) > MAX_DEP_CONTEXT_CHARS:
-            text = text[:MAX_DEP_CONTEXT_CHARS] + "\n…（已截断）"
+        original = len(text)
+        if original > MAX_DEP_CONTEXT_CHARS:
+            text = (
+                text[:MAX_DEP_CONTEXT_CHARS]
+                + f"\n…（内容过长，已从 {original} 字截断；如需完整内容请向队长申请拆分任务）"
+            )
         block = f"### {dep.spec.id} {dep.spec.title}（{dep.spec.owner}）\n{text}"
         if total + len(block) > MAX_TOTAL_CONTEXT_CHARS:
             break

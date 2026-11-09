@@ -1,4 +1,4 @@
-"""任务调度接口：依赖校验、创建运行、查询运行状态。"""
+"""任务调度接口：队长拆解、依赖校验、创建运行、查询运行状态。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,17 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.agents.registry import Team
 from app.api.deps import get_run_store, get_team
-from app.api.schemas import RunCreate, RunSummary, ValidateResponse
+from app.api.schemas import (
+    PlanRequest,
+    PlanResponse,
+    RunCreate,
+    RunSummary,
+    TaskListRequest,
+    UsageOut,
+    ValidateResponse,
+)
 from app.orchestration.models import RunState, RunStatus, TaskState, TaskStatus
+from app.orchestration.planner import plan_tasks
 from app.orchestration.scheduler import execute_run, validate_task_list
 from app.orchestration.store import RunStore
 
@@ -21,6 +30,7 @@ def _summary(run: RunState) -> RunSummary:
         id=run.id,
         status=run.status,
         goal=run.goal,
+        plan_source=run.plan_source,
         total=len(run.tasks),
         completed=run.count(TaskStatus.completed),
         failed=run.count(TaskStatus.failed),
@@ -30,8 +40,25 @@ def _summary(run: RunState) -> RunSummary:
     )
 
 
+@router.post("/runs/plan", response_model=PlanResponse, summary="只让队长拆解任务，不执行")
+async def plan_run(payload: PlanRequest, team: Team = Depends(get_team)) -> PlanResponse:
+    plan = await plan_tasks(team, payload.goal, context=payload.context)
+    return PlanResponse(
+        tasks=plan.tasks,
+        order=plan.order,
+        raw=plan.raw,
+        mode=plan.mode,
+        latency_ms=plan.latency_ms,
+        usage=UsageOut(
+            prompt_tokens=plan.usage.prompt_tokens,
+            completion_tokens=plan.usage.completion_tokens,
+            total_tokens=plan.usage.total_tokens,
+        ),
+    )
+
+
 @router.post("/runs/validate", response_model=ValidateResponse, summary="只做依赖检查，不执行")
-async def validate_run(payload: RunCreate, team: Team = Depends(get_team)) -> ValidateResponse:
+async def validate_run(payload: TaskListRequest, team: Team = Depends(get_team)) -> ValidateResponse:
     ordered = validate_task_list(payload.tasks, set(team.members))
     return ValidateResponse(order=[task.id for task in ordered], tasks=ordered)
 
@@ -44,11 +71,24 @@ async def create_run(
     team: Team = Depends(get_team),
     store: RunStore = Depends(get_run_store),
 ) -> RunState:
-    ordered = validate_task_list(payload.tasks, set(team.members))
+    # 只给 goal 时，先让队长拆解；拆解失败直接 4xx，不会创建空 run
+    if payload.tasks:
+        tasks = payload.tasks
+        plan_source = "manual"
+        planning_ms = None
+    else:
+        plan = await plan_tasks(team, payload.goal or "")
+        tasks = plan.tasks
+        plan_source = "captain"
+        planning_ms = plan.latency_ms
+
+    ordered = validate_task_list(tasks, set(team.members))
     run = RunState(
         id=store.new_id(),
         status=RunStatus.pending,
         goal=payload.goal,
+        plan_source=plan_source,
+        planning_ms=planning_ms,
         tasks=[TaskState(spec=task) for task in ordered],
     )
     store.add(run)

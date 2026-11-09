@@ -23,11 +23,12 @@
 | 团队配置 | `teams/software_team.json`：定义队长与成员映射，启动时装配并校验 |
 | 单 Agent 试跑 | `POST /agents/{id}/run` 与 CLI，验证「prompt + 调 API」链路 |
 | 任务调度器 | 任务清单 + 依赖检查（含环检测）+ 拓扑排序 + 顺序执行 |
+| 队长自动拆解 | 一句 goal → 队长输出 DAG → 解析校验 → 顺序执行 |
 | 运行记录 | 内存存储任务状态、耗时、token 与输出，支持运行详情查询 |
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 39 个用例，覆盖链路、角色、团队校验、依赖检查与调度状态机 |
+| 单元测试 | 46 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机与队长拆解 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -100,7 +101,12 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 
 ## 模块 2：任务调度器
 
-输入是一张任务清单，调度器依次做：**依赖检查 → 拓扑排序 → 顺序执行**。
+调度链路支持两种入口：
+
+- **队长自动拆解**：`POST /runs {"goal": "..."}`，队长先产出任务 DAG，解析校验后直接顺序执行；
+- **手动任务清单**：`POST /runs {"tasks": [...]}`，跳过拆解，直接执行给定清单。
+
+拆解与执行之间可以插入人工确认：`POST /runs/plan` 只出计划不执行。
 
 ```json
 {
@@ -112,6 +118,14 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
   ]
 }
 ```
+
+### 队长拆解（goal → 任务清单）
+
+- 调用队长 Agent，要求输出「说明 + json 代码块形式的任务 DAG」；
+- [planner.py](backend/app/orchestration/planner.py) 从输出里提取 JSON，兼容围栏和非围栏两种写法；
+- 逐个任务按 `TaskSpec` 校验，再交给调度器做依赖检查与拓扑排序；
+- 解析失败返回 422（`plan_parse_failed`），不会创建空 run；
+- `plan_source` 字段标明这次是 `captain` 拆的还是 `manual` 传入的。
 
 ### 依赖检查（执行前）
 
@@ -125,7 +139,7 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 ### 顺序执行
 
 - 按拓扑序逐个执行，同一时刻只有一个任务在跑，同层任务也不会并行
-- 上游任务的输出自动拼进下游 `context`（单条截断 6000 字、总量 24000 字）
+- 上游任务的输出自动拼进下游 `context`（单条上限 30000 字、总量 80000 字，超出会标注截断）
 - 任务失败：下游标记 `skipped`，无关任务继续执行；整个 run 最终为 `failed`
 - 每个任务记录状态、耗时、token 用量、模型与错误信息
 - `POST /api/v1/runs` 默认异步执行（返回 202 + run_id），加 `?wait=true` 则等执行完返回
@@ -135,17 +149,43 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 
 ### 真实运行示例
 
-3 个任务（产品经理 → 架构师 → 开发）顺序执行，总耗时 22.2s、6945 tokens：
-架构师输出引用了上游需求里的 AC1，开发输出沿用了架构师定义的
-`students / courses / grades` 三张表——依赖上下文确实传递到了下游。
+**手动清单**：3 个任务（产品经理 → 架构师 → 开发）顺序执行，22.2s、6945 tokens，
+架构师引用了上游的 AC1，开发沿用了架构师定的三张表。
+
+**队长自动拆解**：一句需求拆出 6 个任务（产品经理 → 架构师 → 开发 ×2 → 测试 → 评审），
+队长 4.6s 出计划，全链路 125s、约 39k tokens，6/6 执行完成。
+这次运行也暴露了一个真实问题：开发产出被上下文截断，测试和评审都据此判了「不完整」——
+**执行完成 ≠ 验收通过**，这正是下一步 Self-Loop 要接的口子。
 
 ```powershell
+# 只拆解，不执行
+curl.exe -X POST http://127.0.0.1:8000/api/v1/runs/plan `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
+
+# 一句话需求直接跑完
 curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
   -H "Content-Type: application/json" `
-  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\",\"tasks\":[ ... ]}"
+  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
 ```
 
-已知限制：运行记录存在内存里，进程重启即丢失；并发、重试、断点续跑留给下一阶段。
+也可以直接用 CLI 看拆解结果和执行进度：
+
+```powershell
+cd AgentOrch\backend
+
+# 拆解 + 顺序执行
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "做一个学生成绩管理系统的后端 API"
+
+# 只看队长拆出什么，不执行
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --plan-only
+
+# 离线跑通全流程
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
+```
+
+已知限制：运行记录存在内存里，进程重启即丢失；上下文靠文本拼接传递，
+代码类产出可能被截断，最终要靠工具读写文件而不是拼 prompt；并发、重试、断点续跑留给下一阶段。
 
 ## 目录结构
 
@@ -171,6 +211,7 @@ AgentOrch/
 │   │   │   └── roles/           # 6 个角色类（prompt 都在这里）
 │   │   ├── orchestration/
 │   │   │   ├── models.py        # TaskSpec / TaskState / RunState
+│   │   │   ├── planner.py       # 队长输出解析、任务校验
 │   │   │   ├── scheduler.py     # 依赖校验、拓扑排序、顺序执行
 │   │   │   └── store.py         # 内存运行记录
 │   │   ├── core/                # config / errors / logging
@@ -179,7 +220,8 @@ AgentOrch/
 │   ├── tests/                   # pytest
 │   ├── scripts/
 │   │   ├── smoke.py             # 端到端冒烟
-│   │   └── run_agent.py         # 单 Agent 试跑 CLI
+│   │   ├── run_agent.py         # 单 Agent 试跑 CLI
+│   │   └── run_pipeline.py      # 队长拆解 + 顺序执行 CLI
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── run.py                   # python run.py
@@ -234,8 +276,9 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | GET | `/api/v1/team` | 当前团队配置与成员详情（含 prompt） |
 | GET | `/api/v1/agents/{agent_id}` | 单个 Agent 配置 |
 | POST | `/api/v1/agents/{agent_id}/run` | 试跑单个 Agent |
+| POST | `/api/v1/runs/plan` | 队长拆解任务，只出计划不执行 |
 | POST | `/api/v1/runs/validate` | 依赖检查，只返回拓扑序不执行 |
-| POST | `/api/v1/runs` | 创建并执行运行（`?wait=true` 同步等待） |
+| POST | `/api/v1/runs` | 创建并执行（给 tasks 直接跑，只给 goal 先拆解） |
 | GET | `/api/v1/runs` | 最近运行列表（摘要，不含输出） |
 | GET | `/api/v1/runs/{run_id}` | 运行详情（含每个任务的输出与用量） |
 
@@ -315,14 +358,17 @@ cd AgentOrch\backend
   执行阶段不需要再处理这类错误。
 - **失败只影响下游**：一个任务失败不会拖垮整张图，无关分支继续跑，
   失败原因写进 `TaskState.error`，便于 Self-Loop 后续生成修复任务。
+- **拆解与执行解耦**：`/runs/plan` 只出计划，`/runs` 才执行；
+  计划可以先人工看一眼，也可以直接 `plan_source=captain` 一路跑到底。
 
 ## 下一步
 
-1. **并行调度**：无依赖任务并发执行（信号量限流），把「顺序」升级成「分层并行」
-2. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
-3. **Self-Loop 控制器**：失败任务自动生成修复任务并重跑，最大轮次与升级策略
+1. **工具化文件读写**：代码落盘、下游用 `file_read` 读文件，替代不可靠的 prompt 拼接
+2. **并行调度**：无依赖任务并发执行（信号量限流），把「顺序」升级成「分层并行」
+3. **Self-Loop 控制器**：失败/驳回的任务自动生成修复任务并重跑，最大轮次与升级策略
 4. **结果验证**：结构化验收记录、双轨验证（自动化测试 + 评审 Agent）
-5. **实时推送**：WebSocket 事件总线，前端监控面板接入
-6. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
+5. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
+6. **实时推送**：WebSocket 事件总线，前端监控面板接入
+7. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
 
 > 详细设计见《AgentOrch_设计方案.docx》。
