@@ -16,7 +16,7 @@ from collections import defaultdict
 
 from app.agents.registry import Team
 from app.core.errors import AppError
-from app.orchestration.acceptance import evaluate_acceptance
+from app.orchestration.acceptance import apply_test_gate, evaluate_acceptance
 from app.orchestration.models import (
     AcceptanceStatus,
     ExecutionStatus,
@@ -26,6 +26,7 @@ from app.orchestration.models import (
     TaskSpec,
     TaskState,
     TaskStatus,
+    TestResult,
     TokenUsage,
     utcnow,
 )
@@ -141,6 +142,7 @@ async def execute_run(
         else:
             await execute_pending(run, team, workspace)
         evaluate_acceptance(run)
+        apply_test_gate(run)
         run.log(f"验收结论：{run.acceptance.verdict or '未给出'}（{run.acceptance.status.value}）")
 
         round_no = 0
@@ -158,9 +160,10 @@ async def execute_run(
                 len(appended),
                 ", ".join(state.spec.id for state in appended),
             )
-            # 修复链本身是串行的：修复 → 复评
+            # 修复链本身是串行的：修复 → 重测 → 复评
             await execute_pending(run, team, workspace)
             evaluate_acceptance(run)
+            apply_test_gate(run)
             run.log(f"第 {round_no} 轮复评：{run.acceptance.verdict or '未给出'}（{run.acceptance.status.value}）")
 
         if run.acceptance.status is AcceptanceStatus.rejected:
@@ -330,6 +333,16 @@ async def _execute_task(
             workspace.write_code_blocks(result.content)
         after = {item.path: item.sha256 for item in workspace.list_files()}
         state.files = [path for path, digest in after.items() if before.get(path) != digest]
+        # 记录本轮 test_runner 的真实结果，供测试门和 Self-Loop 使用
+        for call in result.tool_calls:
+            if call.get("name") != "test_runner" or not isinstance(call.get("result"), dict):
+                continue
+            raw = call["result"]
+            state.test_result = TestResult(
+                exit_code=int(raw.get("exit_code", -1)),
+                output=str(raw.get("output", "")),
+                command=str(raw.get("command", "python -m pytest -q")),
+            )
     finally:
         state.finished_at = utcnow()
         state.duration_ms = int((time.perf_counter() - started) * 1000)
@@ -337,6 +350,12 @@ async def _execute_task(
             run.log(
                 f"任务 {state.spec.id} 完成：{state.duration_ms}ms，"
                 f"{state.usage.total_tokens} tokens，新增/修改 {len(state.files)} 个文件",
+                task_id=state.spec.id,
+            )
+        if state.test_result is not None:
+            run.log(
+                f"测试结果：pytest 退出码 {state.test_result.exit_code}",
+                level=LogLevel.info if state.test_result.exit_code == 0 else LogLevel.warning,
                 task_id=state.spec.id,
             )
 

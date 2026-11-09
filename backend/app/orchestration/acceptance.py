@@ -13,6 +13,7 @@ from app.orchestration.models import (
     AcceptanceStatus,
     RunState,
     TaskStatus,
+    TestResult,
     utcnow,
 )
 
@@ -82,3 +83,35 @@ def evaluate_acceptance(run: RunState) -> AcceptanceState:
         reviewed_at=utcnow(),
     )
     return run.acceptance
+
+
+def latest_test_result(run: RunState) -> TestResult | None:
+    """取最近一次 test_runner 的执行结果。"""
+    for state in reversed(run.tasks):
+        if state.test_result is not None:
+            return state.test_result
+    return None
+
+
+def apply_test_gate(run: RunState) -> None:
+    """自动化测试门：pytest 失败时，验收结论强制为 rejected。
+
+    评审 Agent 可以给「通过」，但只要测试退出码非 0，就不能算验收通过。
+    """
+    result = latest_test_result(run)
+    if result is None or result.exit_code == 0:
+        return
+
+    detail = result.output.strip()
+    if len(detail) > 1_500:
+        detail = detail[-1_500:]
+    reviewer_verdict = run.acceptance.verdict
+    prefix = f"评审结论：{reviewer_verdict}，但" if reviewer_verdict else ""
+    run.acceptance = AcceptanceState(
+        status=AcceptanceStatus.rejected,
+        verdict="测试未通过",
+        summary=f"{prefix}自动化测试门未通过（pytest 退出码 {result.exit_code}）。\n{detail}",
+        blockers=run.acceptance.blockers,
+        reviewer_task=run.acceptance.reviewer_task,
+        reviewed_at=utcnow(),
+    )

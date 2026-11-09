@@ -56,6 +56,8 @@ class ChatResult:
     reasoning_content: str | None = None
     usage: Usage = field(default_factory=Usage)
     finish_reason: str | None = None
+    # 本次调用里实际执行过的工具（name / arguments / result），用于调度层取证
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -225,6 +227,7 @@ class DeepSeekClient:
         conversation: list[dict] = [dict(message) for message in messages]
         usage = Usage()
         last_content = ""
+        executed: list[dict] = []
 
         try:
             for _ in range(max_rounds):
@@ -254,6 +257,7 @@ class DeepSeekClient:
                             mode=self._mode,
                             usage=usage,
                             finish_reason=choice.finish_reason,
+                            tool_calls=executed,
                         )
                     dsml_used = True
                     calls = [
@@ -290,6 +294,7 @@ class DeepSeekClient:
                         result = execute(name, arguments)
                     except Exception as exc:  # noqa: BLE001 —— 工具错误回给模型自行修正
                         result = {"error": f"{type(exc).__name__}: {exc}"}
+                    executed.append({"name": name, "arguments": arguments, "result": result})
                     conversation.append(
                         {
                             "role": "tool",
@@ -318,6 +323,7 @@ class DeepSeekClient:
                 mode=self._mode,
                 usage=usage,
                 finish_reason=response.choices[0].finish_reason,
+                tool_calls=executed,
             )
         except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from exc

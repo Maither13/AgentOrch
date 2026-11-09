@@ -1,4 +1,4 @@
-"""Self-Loop：驳回 → 追加修复任务 → 复评，以及轮次耗尽的降级路径。"""
+"""Self-Loop：失败 → 修复 → 重测 → 复评，以及测试门和轮次耗尽。"""
 
 from __future__ import annotations
 
@@ -48,52 +48,89 @@ class ScriptedAgent:
         )
 
 
-def _team(reviewer_outputs: list[str]):
+class ScriptedTester(ScriptedAgent):
+    """每次 run 返回一个 test_runner 结果，用来验证测试门与重测。"""
+
+    def __init__(self, exit_codes: list[int]) -> None:
+        super().__init__("测试", ["测试完成"])
+        self.exit_codes = exit_codes
+        self.runs = 0
+
+    async def run(self, task, *, context=None, temperature=None, max_tokens=None, workspace=None):
+        result = await super().run(
+            task, context=context, temperature=temperature, max_tokens=max_tokens, workspace=workspace
+        )
+        code = self.exit_codes[min(self.runs, len(self.exit_codes) - 1)]
+        self.runs += 1
+        result.tool_calls = [
+            {
+                "name": "test_runner",
+                "arguments": {},
+                "result": {
+                    "exit_code": code,
+                    "output": f"pytest exit {code}",
+                    "command": "python -m pytest -q",
+                },
+            }
+        ]
+        return result
+
+
+def _team(reviewer_outputs: list[str], tester: ScriptedTester | None = None):
     developer = ScriptedAgent("开发", [CODE])
+    tester = tester or ScriptedTester([0])
     reviewer = ScriptedAgent("评审", reviewer_outputs)
     team = Team(
         id="fake",
         name="假团队",
         description="",
         captain=developer,
-        members={"developer": developer, "reviewer": reviewer},
+        members={"developer": developer, "tester": tester, "reviewer": reviewer},
         source=__import__("pathlib").Path("fake.json"),
     )
-    return team, developer, reviewer
+    return team, developer, tester, reviewer
 
 
-def _run(tmp_path):
-    tasks = [
-        TaskSpec(id="T1", title="实现", goal="写代码", owner="developer"),
-        TaskSpec(id="T2", title="验收", goal="验收", owner="reviewer", depends_on=["T1"]),
-    ]
-    ordered = validate_task_list(tasks, {"developer", "reviewer"})
+def _run(with_tester: bool = False) -> RunState:
+    tasks = [TaskSpec(id="T1", title="实现", goal="写代码", owner="developer")]
+    if with_tester:
+        tasks.append(TaskSpec(id="T2", title="测试", goal="跑测试", owner="tester", depends_on=["T1"]))
+        tasks.append(TaskSpec(id="T3", title="验收", goal="验收", owner="reviewer", depends_on=["T2"]))
+    else:
+        tasks.append(TaskSpec(id="T2", title="验收", goal="验收", owner="reviewer", depends_on=["T1"]))
+    ordered = validate_task_list(tasks, {"developer", "tester", "reviewer"})
     return RunState(id="run-loop", tasks=[TaskState(spec=task) for task in ordered])
 
 
 @pytest.mark.asyncio
 async def test_self_loop_repairs_and_passes(tmp_path):
-    team, developer, reviewer = _team([REJECT, PASS])
-    run = _run(tmp_path)
+    team, developer, tester, reviewer = _team([REJECT, PASS])
+    run = _run()
 
-    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=2)
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=3)
 
     assert run.status == RunStatus.completed
     assert run.acceptance.status is AcceptanceStatus.passed
     assert run.rounds == 1
-    assert [state.spec.id for state in run.tasks] == ["T1", "T2", "R1-fix", "R1-review"]
+    assert [state.spec.id for state in run.tasks] == [
+        "T1",
+        "T2",
+        "R1-fix",
+        "R1-test",
+        "R1-review",
+    ]
     assert all(state.status is TaskStatus.completed for state in run.tasks)
-    # 修复任务确实被执行，且拿到了复评记录的路径
     fix = run.tasks[2]
     assert "tasks/T2.md" in (fix.spec.goal or "")
     assert len(developer.calls) == 2
+    assert len(tester.calls) == 1
     assert len(reviewer.calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_self_loop_exhausted_needs_human(tmp_path):
-    team, developer, reviewer = _team([REJECT])
-    run = _run(tmp_path)
+    team, developer, tester, reviewer = _team([REJECT])
+    run = _run()
 
     await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=2)
 
@@ -105,23 +142,60 @@ async def test_self_loop_exhausted_needs_human(tmp_path):
         "T1",
         "T2",
         "R1-fix",
+        "R1-test",
         "R1-review",
         "R2-fix",
+        "R2-test",
         "R2-review",
     ]
+    assert len(tester.calls) == 2
     assert len(reviewer.calls) == 3
 
 
 @pytest.mark.asyncio
+async def test_failing_test_overrides_review_and_marks_human(tmp_path):
+    """评审说通过，但 pytest 失败：测试门必须把 run 判为 rejected。"""
+    team, _, tester, reviewer = _team([PASS], tester=ScriptedTester([1]))
+    run = _run(with_tester=True)
+
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=0)
+
+    assert run.execution_status.value == "completed"
+    assert run.acceptance.status is AcceptanceStatus.rejected
+    assert run.acceptance.verdict == "测试未通过"
+    assert run.status == RunStatus.rejected
+    assert run.needs_human is True
+    assert run.tasks[1].test_result is not None
+    assert run.tasks[1].test_result.exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_failing_test_triggers_repair_then_passes(tmp_path):
+    """首轮测试失败触发 Self-Loop，重测通过后 run 完成。"""
+    team, developer, tester, reviewer = _team([PASS], tester=ScriptedTester([1, 0]))
+    run = _run(with_tester=True)
+
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=1)
+
+    assert run.rounds == 1
+    assert run.status == RunStatus.completed
+    assert run.acceptance.status is AcceptanceStatus.passed
+    assert tester.runs == 2
+    assert [state.spec.id for state in run.tasks][-3:] == ["R1-fix", "R1-test", "R1-review"]
+    assert run.tasks[-2].test_result is not None
+    assert run.tasks[-2].test_result.exit_code == 0
+
+
+@pytest.mark.asyncio
 async def test_without_reviewer_acceptance_pending(tmp_path):
-    team, _, _ = _team([REJECT])
+    team, _, _, _ = _team([REJECT])
     tasks = [TaskSpec(id="T1", title="实现", goal="写代码", owner="developer")]
     run = RunState(
         id="run-noreview",
         tasks=[TaskState(spec=task) for task in validate_task_list(tasks, {"developer", "reviewer"})],
     )
 
-    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=2)
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=3)
 
     assert run.acceptance.status is AcceptanceStatus.pending
     assert run.status == RunStatus.completed

@@ -53,16 +53,31 @@ Get-ChildItem data\workspaces\<run_id> -Recurse -File
 
 ## 3. Self-Loop
 
-评审驳回后自动追加 `R<n>-fix`（开发）和 `R<n>-review`（复评）两个任务并继续顺序执行，
-轮次由请求参数 `max_repair_rounds` 控制（默认 2）。
+两种触发条件（任一即可）：
+
+1. **测试门**：`test_runner` 的 pytest 退出码非 0，即使评审说「通过」也强制 `rejected`；
+2. **评审驳回**：评审「总体结论」为 `驳回`。
+
+每轮追加 3 个任务，串行执行：
+
+```
+R<n>-fix（开发：带失败日志和评审记录修代码）
+   ↓
+R<n>-test（测试：重新跑 pytest）
+   ↓
+R<n>-review（评审：重新验收）
+```
+
+轮次由 `max_repair_rounds` 控制（默认 3）。
 
 **验证方式**：看日志与任务列表：
 
 ```
-Self-Loop: 第 1 轮修复，追加 2 个任务（R1-fix, R1-review）
+Self-Loop 第 1 轮：追加 3 个任务（R1-fix, R1-test, R1-review）
 ```
 
-任务列表里确实出现 `R1-fix` / `R1-review`，且都执行过；复评通过后 `status` 变为 `completed`。
+任务列表里出现 `R1-fix` / `R1-test` / `R1-review`；`R1-test.test_result.exit_code` 为 0
+且复评通过后 `status` 变为 `completed`。
 
 ## 4. 降级路径（必做）
 
@@ -81,8 +96,10 @@ needs_human = true
 .\.venv\Scripts\python.exe -m pytest tests\test_self_loop.py -q
 ```
 
-其中 `test_self_loop_exhausted_needs_human` 模拟评审连续两次驳回，
-断言最终状态为 `rejected`、`needs_human=True`、共追加 4 个修复任务。
+其中 `test_self_loop_exhausted_needs_human` 模拟评审连续两轮驳回，
+断言最终状态为 `rejected`、`needs_human=True`、共追加 6 个修复任务；
+`test_failing_test_overrides_review_and_marks_human` 验证「评审通过但 pytest 失败」会被测试门拦下，
+`test_failing_test_triggers_repair_then_passes` 验证测试失败能触发循环且重测通过后收口。
 
 **真实模型验证**：挑一个评审大概率挑出问题的需求（比如故意不给验收标准），
 把 `max_repair_rounds` 设为 1 或 2，观察 `rounds` 与 `needs_human`：
@@ -96,7 +113,7 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 ## 5. 回归命令
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 73 个用例
+.\.venv\Scripts\python.exe -m pytest                 # 75 个用例
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --max-rounds 2
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```
@@ -120,21 +137,28 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 评审驳回与轮次耗尽的路径由 `tests/test_self_loop.py` 用可脚本化的假 Agent 确定性覆盖
 （真实模型下评审结论有随机性，不适合作为回归断言）。
 
-### Self-Loop 实测（真实模型）
+### Self-Loop 实测
 
-手动构造 2 个任务：T1 开发「只写 `app/health.py`，不要写测试」，T2 评审「必须同时存在
-`app/health.py` 和 `tests/test_health.py`，缺一个就驳回」。结果：
+早期版本用 2 任务链（修复 → 复评）以真实模型验证过闭环：
 
 ```
 T1         completed  → 只落盘 app/health.py
 T2         completed  → 总体结论：驳回（缺 tests/test_health.py）
-Self-Loop: 第 1 轮修复，追加 2 个任务（R1-fix, R1-review）
+Self-Loop: 第 1 轮修复
 R1-fix     completed  → 补齐 tests/test_health.py、pytest.ini
 R1-review  completed  → 总体结论：有条件通过
-最终：status=completed, acceptance=passed, rounds=1, needs_human=false
+最终：status=completed, acceptance=passed, rounds=1
 ```
 
-日志中的 context 长度：47 / 156 / 170 / 313 字符。
+模块 5 把每轮扩展成「修复 → 重测 → 复评」并加入测试门后，为避免重复消耗模型额度，
+新链路改用确定性单测覆盖：
+
+- `test_self_loop_repairs_and_passes`：评审驳回 → 追加 R1-fix / R1-test / R1-review → 通过；
+- `test_failing_test_overrides_review_and_marks_human`：评审通过但 pytest 失败 → 测试门判 rejected；
+- `test_failing_test_triggers_repair_then_passes`：测试失败触发循环，重测通过后收口；
+- `test_self_loop_exhausted_needs_human`：两轮仍失败 → `needs_human=true`。
+
+`test_runner` 的真实执行此前已单独实测（12 个用例工作区，报告 `12 passed`）。
 
 ## 7. 固定工作流与分层并行实测（真实模型）
 

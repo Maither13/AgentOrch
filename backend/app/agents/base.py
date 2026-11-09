@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Iterable
 
 from app.agents.tooling import schemas_for
@@ -48,6 +48,7 @@ class AgentRunResult:
     latency_ms: int
     mode: str
     allowed_tools: tuple[str, ...]
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 class BaseAgent:
@@ -166,6 +167,7 @@ class BaseAgent:
             latency_ms=result.latency_ms,
             mode=result.mode,
             allowed_tools=self.allowed_tools,
+            tool_calls=result.tool_calls,
         )
 
     @staticmethod

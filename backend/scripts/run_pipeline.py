@@ -1,4 +1,4 @@
-"""一句话需求 → 队长拆解 → 顺序执行。
+﻿"""一句话需求 → 队长拆解 → 顺序执行。
 
 用法：
     .\\.venv\\Scripts\\python.exe scripts\\run_pipeline.py --goal "做一个学生成绩管理系统的后端 API"
@@ -90,7 +90,7 @@ def main() -> int:
     parser.add_argument("--team", default="software_team", help="团队配置 id")
     parser.add_argument("--plan-only", action="store_true", help="只拆解不执行")
     parser.add_argument("--show-output", action="store_true", help="打印每个任务输出的前 220 字")
-    parser.add_argument("--max-rounds", type=int, default=2, help="验收驳回后的最大修复轮次")
+    parser.add_argument("--max-rounds", type=int, default=3, help="验收/测试失败后的最大修复轮次（最多 3 轮）")
     parser.add_argument("--mock", action="store_true", help="本地模拟，不调用真实模型")
     args = parser.parse_args()
     return asyncio.run(_run(args))

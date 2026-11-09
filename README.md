@@ -1,12 +1,12 @@
-# AgentOrch · 多智能体编排调度平台
+﻿# AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
-> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（工作流编排）** + **模块 3（任务调度与执行）** + **模块 4（结果验证与监控）** 已完成。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（工作流编排）** + **模块 3（任务调度与执行）** + **模块 4（结果验证与监控）** + **模块 5（Self-Loop）** 已完成。
 
 第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 定义了 6 个固定角色、
 写死工具权限，并用一份 JSON 描述团队；模块 2 用 `WorkflowStep` + 固定模板把标准流程
 固化下来，按拓扑层并行执行；模块 3 负责任务状态机、内存任务列表、依赖派发与 Agent 调用；
-模块 4 提供执行日志、测试执行、评审验收，并在验收驳回时自动进入 Self-Loop。
+模块 4 提供执行日志、测试执行、评审验收，并在测试失败/验收驳回时自动进入 Self-Loop。
 
 ![联调台](docs/console.png)
 
@@ -28,7 +28,7 @@
 | 双维度状态 | 执行状态（调度器）与验收结论（评审 Agent）分离，汇总为 `completed` / `rejected` |
 | 工作区落盘 | 每个 run 独立 `data/workspaces/<run_id>/`，代码与产出可打开、可追溯 |
 | 文件工具 | `file_list` / `file_read` / `file_write`，Agent 按权限调用，交接只给清单 |
-| Self-Loop | 验收驳回后自动追加「修复 + 复评」任务，最多 N 轮，超限转人工 |
+| Self-Loop | 测试失败/评审驳回 → 修复 → 重测 → 复评，默认最多 3 轮，超限转人工 |
 | 固定工作流 | `WorkflowStep`（step_name + agent + depends_on）+ 软件工程模板 |
 | 分层并行 | 拓扑分层，层内 `asyncio.gather` 并发，信号量限流 |
 | 执行日志 | 每个 run 维护内存 `logs`，记录任务开始/完成/失败、并行层、Self-Loop、验收结论 |
@@ -37,7 +37,7 @@
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 73 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
+| 单元测试 | 75 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -143,7 +143,7 @@ Kahn 算法按层输出（同一层内互不依赖），层与层之间是屏障
 - 每一波扫描所有 pending 任务，依赖全部 `completed` 的进入就绪集合；
 - 层内用 `asyncio.gather` 并发，`Semaphore(max_parallel)` 限流（默认 3）；
 - 上游失败的任务直接 `skipped`，不阻塞同层无关任务；
-- Self-Loop 的修复链（`R<n>-fix` → `R<n>-review`）保持串行。
+- Self-Loop 的修复链（`R<n>-fix` → `R<n>-test` → `R<n>-review`）保持串行。
 
 ### 接口
 
@@ -301,23 +301,48 @@ curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
 实测：在一个 12 个用例的交付工作区里，测试 Agent 调用 `test_runner` 实际执行 pytest，
 工作区生成 `.pytest_cache`，报告 `12 passed`。
 
-### 验收驳回 → 自动修复
-
-`max_repair_rounds`（默认 2）控制 Self-Loop：
-
-1. 首轮执行结束后由评审 Agent 给出结论；
-2. 若驳回，追加 `R<n>-fix`（开发，读取评审记录和代码后修复）与 `R<n>-review`（复评）；
-3. 复评通过 → `status=completed`；仍驳回且轮次用尽 → `status=rejected` + `needs_human=true`。
-
-修复任务会先 `file_read` 读 `tasks/<评审任务>.md` 里的完整评审记录，再检查工作区代码，
-修复后用 `file_write` 写回完整文件——不再依赖 prompt 里的残缺代码片段。
-
 完整的可验证清单见 [docs/verification.md](docs/verification.md)（含「故意制造失败」的降级测试）。
 
 实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
 评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
-另外用一个「首轮故意缺测试」的 2 任务场景实测了 Self-Loop：评审驳回 → 自动追加
-`R1-fix` / `R1-review` → 补齐测试后复评通过，`rounds=1`。
+
+## 模块 5：Self-Loop 自我循环
+
+### 触发条件（任一即可）
+
+1. **测试门**：测试 Agent 调用 `test_runner` 后 pytest 退出码非 0——即使评审给了「通过」，
+   也强制判为 `rejected`；
+2. **评审驳回**：评审「总体结论」为 `驳回`。
+
+### 一轮循环做什么
+
+```
+R<n>-fix（开发：读失败日志 + 评审记录，修代码）
+   ↓
+R<n>-test（测试：重新跑 pytest，退出码落库）
+   ↓
+R<n>-review（评审：重新验收）
+```
+
+- 修复任务的 goal 里直接带**失败测试日志**（末尾 3000 字）和评审结论，开发不用猜；
+- 重测任务必须调用 `test_runner`，结果写回 `TaskState.test_result`；
+- 测试退出码为 0 且复评通过，才 `status=completed`。
+
+### 轮次与降级
+
+`max_repair_rounds` 默认 **3**（上限 5）：
+
+- 轮次用尽仍未通过 → `status=rejected`、`needs_human=true`，日志提示转人工；
+- `max_repair_rounds=0` 可关闭循环，直接暴露首次失败结果。
+
+### 关键代码
+
+- [acceptance.py](backend/app/orchestration/acceptance.py)：评审结论解析 + 测试门
+- [self_loop.py](backend/app/orchestration/self_loop.py)：生成修复/重测/复评任务
+- [scheduler.py](backend/app/orchestration/scheduler.py)：轮次控制与测试结果取证
+
+测试门、失败触发循环、轮次耗尽三条路径由 `tests/test_self_loop.py` 的 5 个用例确定性覆盖；
+此前已用真实模型验证过「驳回 → 修复 → 复评」闭环（`rounds=1`）。
 
 ## 目录结构
 
@@ -426,7 +451,7 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | GET | `/api/v1/workflows/{workflow_id}` | 模板详情 |
 | POST | `/api/v1/workflows/{workflow_id}/runs` | 按模板发起运行（分层并行） |
 
-`POST /runs` 的 `max_repair_rounds` 控制验收驳回后的修复轮次（默认 2，0 表示不循环）。
+`POST /runs` 的 `max_repair_rounds` 控制验收/测试失败后的修复轮次（默认 3，0 表示不循环）。
 Run 响应里除了任务列表，还包含 `execution_status`、`acceptance`、`rounds`、
 `needs_human` 与 `workspace_dir`；固定工作流的运行还会带 `workflow`。
 

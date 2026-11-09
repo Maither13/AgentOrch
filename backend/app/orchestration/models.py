@@ -94,6 +94,14 @@ class TokenUsage(BaseModel):
     total_tokens: int = 0
 
 
+class TestResult(BaseModel):
+    """测试 Agent 调用 test_runner 的执行结果。"""
+
+    exit_code: int = -1
+    output: str = ""
+    command: str = "python -m pytest -q"
+
+
 class TaskState(BaseModel):
     spec: TaskSpec
     status: TaskStatus = TaskStatus.pending
@@ -104,6 +112,8 @@ class TaskState(BaseModel):
     error: str | None = None
     # 本次任务新建或修改的工作区文件
     files: list[str] = Field(default_factory=list)
+    # 测试类任务最后一次 pytest 结果（来自 test_runner 工具）
+    test_result: TestResult | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
     started_at: datetime | None = None
     finished_at: datetime | None = None
