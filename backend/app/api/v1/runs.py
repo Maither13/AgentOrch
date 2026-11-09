@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Response
 
@@ -12,6 +13,7 @@ from app.api.schemas import (
     PlanRequest,
     PlanResponse,
     RunCreate,
+    RunFileResponse,
     RunSummary,
     TaskListRequest,
     UsageOut,
@@ -130,3 +132,16 @@ async def get_run(run_id: str, store: RunStore = Depends(get_run_store)) -> RunS
 @router.get("/runs/{run_id}/logs", response_model=list[LogEntry], summary="运行执行日志")
 async def get_run_logs(run_id: str, store: RunStore = Depends(get_run_store)) -> list[LogEntry]:
     return store.get(run_id).logs
+
+
+@router.get("/runs/{run_id}/file", response_model=RunFileResponse, summary="读取运行工作区文件")
+async def get_run_file(
+    run_id: str,
+    path: str = Query(..., min_length=1, description="工作区内相对路径"),
+    store: RunStore = Depends(get_run_store),
+) -> RunFileResponse:
+    run = store.get(run_id)
+    root = Path(run.workspace_dir) if run.workspace_dir else Workspace.for_run(run.id).root
+    workspace = Workspace(root)
+    content = workspace.read_text(path)
+    return RunFileResponse(path=path, size=len(content.encode("utf-8")), content=content)

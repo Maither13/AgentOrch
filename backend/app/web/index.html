@@ -238,6 +238,20 @@
   .round-verdict b { color: var(--text); }
   .initial-tasks { margin-bottom: 14px; }
 
+  .repair-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 6px 2px; border-top: 1px dashed var(--line); margin-top: 8px; }
+  .repair-round { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+  .repair-node { padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+  .repair-arrow { color: #3b4c6e; }
+  .blockers { margin: 8px 0 0; padding-left: 18px; color: #ffd2d2; font-size: 12px; line-height: 1.7; }
+  .file-link { border: 0; background: transparent; padding: 0; color: #8fb4ff; font: inherit; font-size: 10.5px; text-align: left; cursor: pointer; }
+  .file-link:hover { text-decoration: underline; }
+  .modal { position: fixed; inset: 0; background: rgba(3,7,15,.72); backdrop-filter: blur(4px); display: grid; place-items: center; z-index: 50; padding: 20px; }
+  .modal-card { width: min(900px,94vw); max-height: 82vh; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .modal-card header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .modal-card header code { font-size: 12px; color: var(--muted); }
+  .modal-card header button { border: 0; background: transparent; font-size: 20px; line-height: 1; padding: 0 6px; }
+  .modal-card pre { margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.65; color: #c9d7ef; }
+
   @media (max-width: 1100px) {
     .canvas-layout { grid-template-columns: 1fr; }
     .inspector { min-height: 0; }
@@ -277,6 +291,10 @@
       <section id="view-canvas">
         <div class="panel toolbar">
           <input id="goalInput" type="text" value="做一个学生成绩管理系统的后端 API" />
+          <select id="planMode" title="编排方式">
+            <option value="workflow" selected>固定工作流</option>
+            <option value="captain">队长拆解</option>
+          </select>
           <select id="maxRounds" title="最大修复轮次">
             <option value="0">0 轮修复</option>
             <option value="1">1 轮修复</option>
@@ -285,8 +303,8 @@
           </select>
           <select id="maxParallel" title="最大并行度">
             <option value="1">串行</option>
-            <option value="2" selected>并行 2</option>
-            <option value="3">并行 3</option>
+            <option value="2">并行 2</option>
+            <option value="3" selected>并行 3</option>
           </select>
           <button class="primary" id="startBtn">启动运行</button>
           <span id="runHint" class="small muted"></span>
@@ -294,6 +312,7 @@
         <div class="canvas-layout">
           <div class="panel canvas-wrap">
             <svg id="dag" role="img" aria-label="工作流 DAG"></svg>
+            <div id="repairStrip" class="repair-strip"></div>
           </div>
           <aside class="panel inspector" id="inspector">
             <div class="empty">点击画布节点查看步骤详情</div>
@@ -322,13 +341,21 @@
     </main>
   </div>
 
+  <div id="fileModal" class="modal" hidden>
+    <div class="modal-card">
+      <header><code id="filePathLabel"></code><button id="fileClose" title="关闭">×</button></header>
+      <pre id="fileBody"></pre>
+    </div>
+  </div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const els = {
   llmPill: $("llmPill"), teamPill: $("teamPill"), runPill: $("runPill"),
-  goal: $("goalInput"), rounds: $("maxRounds"), parallel: $("maxParallel"),
+  goal: $("goalInput"), rounds: $("maxRounds"), parallel: $("maxParallel"), planMode: $("planMode"),
   start: $("startBtn"), hint: $("runHint"), refresh: $("refreshBtn"),
-  dag: $("dag"), inspector: $("inspector"),
+  dag: $("dag"), repairStrip: $("repairStrip"), inspector: $("inspector"),
+  fileModal: $("fileModal"), filePathLabel: $("filePathLabel"), fileBody: $("fileBody"), fileClose: $("fileClose"),
   teamGrid: $("teamGrid"), runList: $("runList"), runDetail: $("runDetail"),
   loopSummary: $("loopSummary"), loopRounds: $("loopRounds"),
   views: {
@@ -339,7 +366,7 @@ const els = {
 
 const state = {
   health: null, workflow: null, team: null,
-  runs: [], run: null, selectedRunId: null, selectedStep: null,
+  runs: [], run: null, selectedRunId: null, selected: null,
   view: "canvas",
 };
 
@@ -417,7 +444,7 @@ async function boot() {
     state.runs = runs;
 
     renderHeader();
-    buildDag();
+    renderCanvas();
     renderTeam();
     renderRunsList();
     if (runs.length) {
@@ -428,7 +455,7 @@ async function boot() {
       renderRunDetail();
       renderLoop();
     }
-    setInterval(poll, 2000);
+    startPolling();
   } catch (error) {
     els.llmPill.textContent = "后端不可用";
     els.llmPill.className = "pill err";
@@ -456,39 +483,84 @@ function renderHeader() {
 
 /* ---------------- 画布 ---------------- */
 const NODE_W = 170, NODE_H = 64, GAP_X = 40, GAP_Y = 34, PAD_X = 30, PAD_Y = 42;
-let dagPositions = {};
 
-function buildDag() {
-  const workflow = state.workflow;
-  if (!workflow) return;
-  const layers = workflow.layers;
-  const stepByName = Object.fromEntries(workflow.steps.map((step) => [step.step_name, step]));
+function computeLayers(nodes) {
+  const keys = new Set(nodes.map((node) => node.key));
+  const indegree = new Map(nodes.map((node) => [node.key, node.depends_on.filter((dep) => keys.has(dep)).length]));
+  const children = new Map(nodes.map((node) => [node.key, []]));
+  nodes.forEach((node) => node.depends_on.forEach((dep) => {
+    if (children.has(dep)) children.get(dep).push(node.key);
+  }));
 
+  let ready = nodes.filter((node) => indegree.get(node.key) === 0).map((node) => node.key);
+  const layers = [];
+  while (ready.length) {
+    layers.push(ready);
+    const next = [];
+    ready.forEach((key) => children.get(key).forEach((child) => {
+      indegree.set(child, indegree.get(child) - 1);
+      if (indegree.get(child) === 0) next.push(child);
+    }));
+    ready = next;
+  }
+  return layers;
+}
+
+function templateNodes() {
+  return state.workflow.steps.map((step) => {
+    const task = taskForStep(step.step_name);
+    const agent = state.team?.members.find((member) => member.id === step.agent);
+    return {
+      key: step.step_name,
+      title: step.step_name,
+      sub: agent?.display_name || step.agent,
+      depends_on: step.depends_on,
+      status: task ? task.status : "pending",
+      kind: "step",
+    };
+  });
+}
+
+function runNodes(run) {
+  return run.tasks.map((task) => ({
+    key: task.spec.id,
+    title: task.spec.title || task.spec.id,
+    sub: task.agent_name || task.spec.owner,
+    depends_on: task.spec.depends_on,
+    status: task.status,
+    kind: "task",
+  }));
+}
+
+function renderGraph(nodes) {
+  if (!nodes.length) return;
+  const layers = computeLayers(nodes);
+  const byKey = Object.fromEntries(nodes.map((node) => [node.key, node]));
   const layerHeights = layers.map((layer) => layer.length * NODE_H + (layer.length - 1) * GAP_Y);
   const maxHeight = Math.max(...layerHeights);
   const width = PAD_X * 2 + layers.length * NODE_W + (layers.length - 1) * GAP_X;
   const height = maxHeight + PAD_Y * 2 + 20;
 
-  dagPositions = {};
+  const positions = {};
   layers.forEach((layer, layerIndex) => {
     const blockHeight = layer.length * NODE_H + (layer.length - 1) * GAP_Y;
     let y = PAD_Y + 14 + (maxHeight - blockHeight) / 2;
-    layer.forEach((name) => {
-      dagPositions[name] = { x: PAD_X + layerIndex * (NODE_W + GAP_X), y, layer: layerIndex };
+    layer.forEach((key) => {
+      positions[key] = { x: PAD_X + layerIndex * (NODE_W + GAP_X), y };
       y += NODE_H + GAP_Y;
     });
   });
 
   const edges = [];
-  workflow.steps.forEach((step) => {
-    step.depends_on.forEach((dependency) => {
-      const from = dagPositions[dependency];
-      const to = dagPositions[step.step_name];
+  nodes.forEach((node) => {
+    node.depends_on.forEach((dependency) => {
+      const from = positions[dependency];
+      const to = positions[node.key];
       if (!from || !to) return;
       const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
       const x2 = to.x, y2 = to.y + NODE_H / 2;
-      const curve = Math.max(28, (x2 - x1) / 2);
-      edges.push(`<path class="edge" data-from="${esc(dependency)}" data-to="${esc(step.step_name)}"
+      const curve = Math.max(24, (x2 - x1) / 2);
+      edges.push(`<path class="edge" data-to="${esc(node.key)}"
         d="M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}" marker-end="url(#arrow)" />`);
     });
   });
@@ -498,15 +570,14 @@ function buildDag() {
     return `<text class="layer-label" x="${x}" y="${PAD_Y - 12}">L${index + 1}</text>`;
   }).join("");
 
-  const nodes = layers.flat().map((name) => {
-    const step = stepByName[name];
-    const position = dagPositions[name];
-    const agent = state.team?.members.find((member) => member.id === step.agent);
-    return `<g class="node status-pending" data-step="${esc(name)}" transform="translate(${position.x}, ${position.y})">
+  const nodesHtml = layers.flat().map((key) => {
+    const node = byKey[key];
+    const position = positions[key];
+    return `<g class="node status-${esc(node.status)}" data-kind="${esc(node.kind)}" data-key="${esc(key)}" transform="translate(${position.x}, ${position.y})">
       <rect class="node-bg" width="${NODE_W}" height="${NODE_H}" rx="12" />
       <circle class="node-dot" cx="18" cy="22" r="5" />
-      <text class="node-title" x="32" y="26">${esc(name)}</text>
-      <text class="node-sub" x="16" y="48">${esc(agent?.display_name || step.agent)} · L${position.layer + 1}</text>
+      <text class="node-title" x="32" y="26">${esc(node.title)}</text>
+      <text class="node-sub" x="16" y="48">${esc(node.sub)}${node.kind === "task" ? ` · ${esc(key)}` : ""}</text>
     </g>`;
   }).join("");
 
@@ -519,17 +590,24 @@ function buildDag() {
     </defs>
     ${layerLabels}
     <g id="edgeLayer">${edges.join("")}</g>
-    <g id="nodeLayer">${nodes}</g>`;
+    <g id="nodeLayer">${nodesHtml}</g>`;
 
   els.dag.querySelectorAll(".node").forEach((node) => {
     node.addEventListener("click", () => {
-      state.selectedStep = node.dataset.step;
-      document.querySelectorAll(".node").forEach((item) => item.classList.remove("selected"));
+      state.selected = { kind: node.dataset.kind, key: node.dataset.key };
+      els.dag.querySelectorAll(".node").forEach((item) => item.classList.remove("selected"));
       node.classList.add("selected");
       renderInspector();
     });
   });
-  updateDagStatuses();
+}
+
+function renderCanvas() {
+  if (!state.workflow) return;
+  // 固定工作流用模板图；队长自由拆解直接用这次 run 的任务图（含修复任务）
+  const useRunGraph = state.run && state.run.workflow == null;
+  renderGraph(useRunGraph ? runNodes(state.run) : templateNodes());
+  renderRepairStrip();
 }
 
 function taskForStep(stepName) {
@@ -537,28 +615,77 @@ function taskForStep(stepName) {
   return state.run.tasks.find((task) => task.spec.title === stepName) || null;
 }
 
-function updateDagStatuses() {
-  if (!state.workflow) return;
-  els.dag.querySelectorAll(".node").forEach((node) => {
-    const task = taskForStep(node.dataset.step);
-    node.classList.remove("status-pending", "status-running", "status-completed", "status-failed", "status-skipped");
-    node.classList.add(`status-${task ? task.status : "pending"}`);
-  });
-  els.dag.querySelectorAll(".edge").forEach((edge) => {
-    const target = taskForStep(edge.dataset.to);
-    edge.classList.toggle("active", Boolean(target && target.status !== "pending"));
-  });
+function renderRepairStrip() {
+  const strip = $("repairStrip");
+  if (!state.run || state.run.workflow == null) {
+    strip.innerHTML = "";
+    return;
+  }
+  const { rounds } = roundTasks(state.run);
+  if (!rounds.length) {
+    strip.innerHTML = `<span class="muted small">本次运行没有触发 Self-Loop 修复轮次（首轮通过或未进入循环）</span>`;
+    return;
+  }
+  const statusChip = (task, label) => task
+    ? `<span class="repair-node">${label} ${esc(task.spec.id)} ${pill(task.status, TASK_LABEL)}</span>`
+    : "";
+  strip.innerHTML = rounds.map(([number, group]) => `
+    <div class="repair-round">
+      <b>第 ${number} 轮</b>
+      ${statusChip(group.fix, "修复")}
+      <span class="repair-arrow">→</span>
+      ${statusChip(group.test, "重测")}
+      <span class="repair-arrow">→</span>
+      ${statusChip(group.review, "复评")}
+      <span class="muted">判定：${esc(roundVerdict(state.run, number))}</span>
+    </div>
+  `).join("");
 }
 
 function renderInspector() {
-  const name = state.selectedStep;
-  if (!name) {
-    els.inspector.innerHTML = `<div class="empty">点击画布节点查看步骤详情</div>`;
+  const selected = state.selected;
+  if (!selected) {
+    els.inspector.innerHTML = `<div class="empty">点击画布节点查看详情</div>`;
     return;
   }
-  const step = state.workflow.steps.find((item) => item.step_name === name);
+
+  if (selected.kind === "task") {
+    const task = state.run?.tasks.find((item) => item.spec.id === selected.key);
+    if (!task) {
+      els.inspector.innerHTML = `<div class="empty">任务不存在</div>`;
+      return;
+    }
+    const agent = state.team.members.find((member) => member.id === task.spec.owner);
+    const tools = (agent?.allowed_tools || []).map((tool) =>
+      `<span class="chip ${tool.implemented ? "on" : "off"}" title="${esc(tool.description)}">${esc(tool.display_name)}</span>`
+    ).join("");
+    els.inspector.innerHTML = `
+      <h3>${esc(task.spec.title)} ${pill(task.status, TASK_LABEL)}</h3>
+      <div class="role">${esc(task.spec.id)} · ${esc(agent?.display_name || task.spec.owner)}</div>
+      <section>
+        <h4>依赖</h4>
+        <div class="chips">${task.spec.depends_on.length ? task.spec.depends_on.map((item) => `<span class="chip">${esc(item)}</span>`).join("") : '<span class="muted small">无（首层）</span>'}</div>
+      </section>
+      <section>
+        <h4>工具权限</h4>
+        <div class="chips">${tools}</div>
+      </section>
+      <section>
+        <h4>本次执行</h4>
+        <div class="kv"><span>耗时</span><span>${fmtMs(task.duration_ms)}</span></div>
+        <div class="kv"><span>Token</span><span>${task.usage?.total_tokens ?? 0}</span></div>
+        <div class="kv"><span>文件</span><span>${task.files?.length || 0} 个</span></div>
+        ${task.test_result ? `<div class="kv"><span>pytest</span><span>退出码 ${task.test_result.exit_code}</span></div>` : ""}
+      </section>
+      ${task.error ? `<section><h4>错误</h4><div class="preview">${esc(task.error)}</div></section>` : ""}
+      ${task.output ? `<section><h4>输出摘要</h4><div class="preview">${esc(task.output.slice(0, 700))}</div></section>` : ""}
+    `;
+    return;
+  }
+
+  const step = state.workflow.steps.find((item) => item.step_name === selected.key);
   const agent = state.team.members.find((member) => member.id === step.agent);
-  const task = taskForStep(name);
+  const task = taskForStep(step.step_name);
   const status = task ? task.status : "pending";
   const tools = (agent?.allowed_tools || []).map((tool) =>
     `<span class="chip ${tool.implemented ? "on" : "off"}" title="${esc(tool.description)}">${esc(tool.display_name)}</span>`
@@ -633,6 +760,7 @@ function renderRunDetail() {
     return;
   }
   const acceptance = run.acceptance || {};
+  const statusLabel = ACCEPT_LABEL[acceptance.status] || acceptance.status || "待验收";
   const acceptanceClass = acceptance.status === "passed" ? "ok" : acceptance.status === "rejected" || acceptance.status === "needs_revision" ? "err" : "";
   const tasks = run.tasks.map((task) => `
     <tr>
@@ -642,7 +770,7 @@ function renderRunDetail() {
       <td>${fmtMs(task.duration_ms)}</td>
       <td>${task.usage?.total_tokens ?? 0}</td>
       <td>${task.test_result ? `<span class="pill ${task.test_result.exit_code === 0 ? "pass" : "err"}">${task.test_result.exit_code}</span>` : "—"}</td>
-      <td><div class="task-files">${(task.files || []).slice(0, 4).map((file) => `<code>${esc(file)}</code>`).join("") || "—"}${(task.files || []).length > 4 ? `<span>… ${task.files.length - 4} 个</span>` : ""}</div></td>
+      <td><div class="task-files">${(task.files || []).slice(0, 4).map((file) => `<button class="file-link" data-path="${esc(file)}">${esc(file)}</button>`).join("") || "—"}${(task.files || []).length > 4 ? `<span>… ${task.files.length - 4} 个</span>` : ""}</div></td>
     </tr>
   `).join("");
 
@@ -671,8 +799,9 @@ function renderRunDetail() {
       ${run.needs_human ? '<span class="pill err">需人工介入</span>' : ""}
     </div>
     <div class="acceptance ${acceptanceClass}">
-      <b>验收结论：</b>${esc(acceptance.verdict || "未给出")} · ${esc(ACCEPT_LABEL[acceptance.status] || acceptance.status || "待验收")}
+      <b>验收结论：</b>${esc(acceptance.verdict || statusLabel)}${acceptance.verdict && acceptance.verdict !== statusLabel ? ` · ${esc(statusLabel)}` : ""}
       ${acceptance.summary ? `<div style="margin-top:6px;color:#b9c8e4">${esc(plain(acceptance.summary.slice(0, 600)))}</div>` : ""}
+      ${(acceptance.blockers || []).length ? `<ul class="blockers">${acceptance.blockers.map((item) => `<li>${esc(plain(item))}</li>`).join("")}</ul>` : ""}
     </div>
     <table class="task-table">
       <thead><tr><th>步骤</th><th>Agent</th><th>状态</th><th>耗时</th><th>Token</th><th>pytest</th><th>交付文件</th></tr></thead>
@@ -705,13 +834,13 @@ function roundTasks(run) {
 function roundVerdict(run, round) {
   const prefix = `第 ${round} 轮复评：`;
   const log = (run.logs || []).find((item) => item.message.startsWith(prefix));
-  return log ? log.message.slice(prefix.length) : "—";
+  return log ? log.message.slice(prefix.length).replace(/（[^）]*）$/, "") : "—";
 }
 
 function renderLoop() {
   const run = state.run;
   if (!run) {
-    els.loopSummary.innerHTML = `<div class="empty">选择一次运行后查看 Self-Loop 轮次</div>`;
+    els.loopSummary.innerHTML = `<div class="empty">还没有可查看的运行<br /><button onclick="switchView('canvas')" style="margin-top:12px">去编排画布启动一次</button></div>`;
     els.loopRounds.innerHTML = "";
     return;
   }
@@ -730,6 +859,7 @@ function renderLoop() {
     <div class="small muted" style="margin-top:10px">
       ${acceptance.summary ? esc(plain(acceptance.summary.slice(0, 300))) : "首轮执行 → 评审/测试失败 → 修复 → 重测 → 复评"}
     </div>
+    ${(acceptance.blockers || []).length ? `<ul class="blockers">${acceptance.blockers.map((item) => `<li>${esc(plain(item))}</li>`).join("")}</ul>` : ""}
   `;
 
   const initialHtml = `
@@ -765,7 +895,14 @@ function renderLoop() {
     </div>`;
   }).join("");
 
-  els.loopRounds.innerHTML = `<div class="round-grid">${initialHtml}${roundsHtml || ""}</div>`;
+  const noLoopHtml = rounds.length ? "" : `<div class="panel round-card">
+    <div class="round-head"><h3>未触发修复</h3><span class="pill pass">0 轮</span></div>
+    <p class="small muted" style="line-height:1.7;margin:0">
+      本次运行首轮即通过，或 max_repair_rounds=0。只有测试失败 / 评审驳回时才会生成
+      R&lt;n&gt;-fix → R&lt;n&gt;-test → R&lt;n&gt;-review 修复链。
+    </p>
+  </div>`;
+  els.loopRounds.innerHTML = `<div class="round-grid">${initialHtml}${roundsHtml || noLoopHtml}</div>`;
 }
 
 /* ---------------- 交互 ---------------- */
@@ -786,25 +923,24 @@ document.querySelectorAll(".rail button").forEach((button) => {
 els.start.addEventListener("click", async () => {
   const goal = els.goal.value.trim();
   if (!goal) return;
+  const mode = els.planMode.value;
   els.start.disabled = true;
-  els.hint.textContent = "创建运行中…";
+  els.hint.textContent = mode === "captain" ? "队长拆解中…" : "创建运行中…";
   try {
-    const run = await api("/api/v1/workflows/software_development/runs", {
-      method: "POST",
-      body: JSON.stringify({
-        goal,
-        max_repair_rounds: Number(els.rounds.value),
-        max_parallel: Number(els.parallel.value),
-      }),
-    });
+    const payload = { goal, max_repair_rounds: Number(els.rounds.value) };
+    if (mode === "workflow") payload.max_parallel = Number(els.parallel.value);
+    const path = mode === "captain" ? "/api/v1/runs" : "/api/v1/workflows/software_development/runs";
+    const run = await api(path, { method: "POST", body: JSON.stringify(payload) });
     state.run = run;
     state.selectedRunId = run.id;
+    state.selected = null;
     state.runs = await api("/api/v1/runs?limit=12");
     renderHeader();
     renderRunsList();
     renderRunDetail();
     renderLoop();
-    updateDagStatuses();
+    renderCanvas();
+    startPolling();
     els.hint.textContent = `已启动 ${run.id}`;
     switchView("canvas");
   } catch (error) {
@@ -827,7 +963,7 @@ els.refresh.addEventListener("click", async () => {
     renderRunsList();
     renderRunDetail();
     renderLoop();
-    updateDagStatuses();
+    renderCanvas();
     renderInspector();
   } catch (error) {
     els.hint.textContent = `刷新失败：${error.message}`;
@@ -845,8 +981,34 @@ async function selectRun(runId) {
   renderRunsList();
   renderRunDetail();
   renderLoop();
-  updateDagStatuses();
+  renderCanvas();
   renderInspector();
+  if (isActiveRun(state.run)) startPolling(); else stopPolling();
+}
+
+let pollTimer = null;
+
+function isActiveRun(run) {
+  return Boolean(run && (run.status === "pending" || run.status === "running"));
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  if (!isActiveRun(state.run)) return;
+  pollTimer = setTimeout(pollStep, 1200);
+}
+
+async function pollStep() {
+  pollTimer = null;
+  await poll();
+  if (isActiveRun(state.run)) pollTimer = setTimeout(pollStep, 1200);
 }
 
 async function poll() {
@@ -859,12 +1021,39 @@ async function poll() {
     renderRunsList();
     if (state.view === "runs") renderRunDetail();
     if (state.view === "loop") renderLoop();
-    updateDagStatuses();
-    if (state.selectedStep) renderInspector();
+    renderCanvas();
+    if (state.selected) renderInspector();
   } catch (_) {
     /* 网络抖动时静默，下一次轮询重试 */
   }
 }
+
+async function openFile(path) {
+  if (!state.run) return;
+  try {
+    const file = await api(`/api/v1/runs/${state.run.id}/file?path=${encodeURIComponent(path)}`);
+    els.filePathLabel.textContent = file.path;
+    els.fileBody.textContent = file.content;
+    els.fileModal.hidden = false;
+  } catch (error) {
+    els.filePathLabel.textContent = path;
+    els.fileBody.textContent = `读取失败：${error.message}`;
+    els.fileModal.hidden = false;
+  }
+}
+
+function closeFile() {
+  els.fileModal.hidden = true;
+}
+
+els.fileClose.addEventListener("click", closeFile);
+els.fileModal.addEventListener("click", (event) => {
+  if (event.target === els.fileModal) closeFile();
+});
+els.runDetail.addEventListener("click", (event) => {
+  const link = event.target.closest(".file-link");
+  if (link) openFile(link.dataset.path);
+});
 
 boot();
 </script>

@@ -318,7 +318,6 @@ async def _execute_task(
         run.log(state.error, level=LogLevel.error, task_id=state.spec.id)
         return
 
-    before = {item.path: item.sha256 for item in workspace.list_files()}
     state.status = TaskStatus.running
     state.started_at = utcnow()
     started = time.perf_counter()
@@ -332,7 +331,7 @@ async def _execute_task(
         state.spec.id,
         state.spec.owner,
         len(context),
-        len(before),
+        len(workspace.list_files()),
     )
 
     try:
@@ -359,14 +358,19 @@ async def _execute_task(
             total_tokens=result.usage.total_tokens,
         )
         # 产出全部落盘：先存完整回复，再从开发输出里兜底提取代码块
+        written: list[str] = []
+        for call in result.tool_calls:
+            if call.get("name") != "file_write":
+                continue
+            arguments = call.get("arguments") or {}
+            path = arguments.get("path")
+            if isinstance(path, str) and path:
+                written.append(path)
         workspace.save_artifact(state.spec.id, result.content)
         if state.spec.owner == "developer":
-            workspace.write_code_blocks(result.content)
-        after = {item.path: item.sha256 for item in workspace.list_files()}
-        # tasks/ 是系统留档，不算本次任务的交付文件
-        state.files = [
-            path for path, digest in after.items() if before.get(path) != digest and not path.startswith("tasks/")
-        ]
+            written.extend(info.path for info in workspace.write_code_blocks(result.content))
+        # 只记录本任务自己写出的文件，避免并行时把兄弟任务的产出算进来
+        state.files = list(dict.fromkeys(written))
         # 工具调用留痕 + 测试结果取证
         for call in result.tool_calls:
             name = str(call.get("name", "unknown"))

@@ -174,6 +174,12 @@ class TaskListRequest(BaseModel):
     tasks: list[TaskSpec] = Field(min_length=1, max_length=20)
 
 
+class RunFileResponse(BaseModel):
+    path: str
+    size: int
+    content: str
+
+
 class RunSummary(BaseModel):
     id: str
     status: RunStatus

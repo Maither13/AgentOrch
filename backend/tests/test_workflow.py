@@ -146,6 +146,50 @@ class SlowAgent:
         )
 
 
+class WritingAgent:
+    async def run(self, task, *, context=None, temperature=None, max_tokens=None, workspace=None):
+        path = task.strip()
+        return AgentRunResult(
+            agent_id="writer",
+            role="developer",
+            display_name="写文件 Agent",
+            model="fake",
+            content=f"wrote {path}",
+            usage=Usage(1, 1, 2),
+            latency_ms=1,
+            mode="mock",
+            allowed_tools=(),
+            tool_calls=[
+                {
+                    "name": "file_write",
+                    "arguments": {"path": path, "content": "x"},
+                    "result": {"path": path, "size": 1},
+                }
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_parallel_tasks_only_claim_their_own_files(tmp_path):
+    agent = WritingAgent()
+    team = Team(
+        id="t", name="t", description="", captain=agent,
+        members={"developer": agent}, source=tmp_path / "team.json",
+    )
+    run = RunState(
+        id="run-files",
+        tasks=[
+            TaskState(spec=TaskSpec(id="A", title="A", goal="a.py", owner="developer")),
+            TaskState(spec=TaskSpec(id="B", title="B", goal="b.py", owner="developer")),
+        ],
+    )
+
+    await execute_run(run, team, workspace=Workspace(tmp_path), parallel=True, max_parallel=2)
+
+    files = {task.spec.id: task.files for task in run.tasks}
+    assert files == {"A": ["a.py"], "B": ["b.py"]}
+
+
 @pytest.mark.asyncio
 async def test_independent_tasks_run_in_parallel(tmp_path):
     agent = SlowAgent(delay=0.15)

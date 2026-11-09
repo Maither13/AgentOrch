@@ -100,6 +100,19 @@ def test_run_sequentially(client):
     assert summary["completed"] == 3
 
 
+def test_run_file_endpoint(client):
+    resp = client.post("/api/v1/runs?wait=true", json={"tasks": TASKS})
+    run_id = resp.json()["id"]
+
+    file_resp = client.get(f"/api/v1/runs/{run_id}/file", params={"path": "tasks/T1.md"})
+    assert file_resp.status_code == 200
+    assert "MOCK" in file_resp.json()["content"]
+
+    bad = client.get(f"/api/v1/runs/{run_id}/file", params={"path": "../outside.txt"})
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "invalid_path"
+
+
 def test_get_unknown_run(client):
     resp = client.get("/api/v1/runs/run-not-exist")
     assert resp.status_code == 404

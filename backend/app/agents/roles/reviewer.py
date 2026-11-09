@@ -29,4 +29,7 @@ class ReviewerAgent(BaseAgent):
 - 测试未覆盖的 P0 验收标准视为 failed。
 - 测试通过但实现与设计契约不一致，视为 failed。
 - 只做评审与建议，不直接修改代码；修复由开发 Agent 执行。
+
+## 工具预算
+- 最多 file_read 8 个文件；test_runner 最多运行 1 次。先 file_list 选证据文件，不要全量遍历。
 """
