@@ -104,6 +104,7 @@ class RunState(BaseModel):
     goal: str | None = None
     # manual：调用方直接给任务清单；captain：由队长拆解生成
     plan_source: str = "manual"
+    workflow: str | None = None
     planning_ms: int | None = None
     rounds: int = 0
     needs_human: bool = False

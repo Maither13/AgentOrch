@@ -96,7 +96,7 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 ## 5. 回归命令
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 62 个用例
+.\.venv\Scripts\python.exe -m pytest                 # 70 个用例
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --max-rounds 2
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```
@@ -135,4 +135,35 @@ R1-review  completed  → 总体结论：有条件通过
 ```
 
 日志中的 context 长度：47 / 156 / 170 / 313 字符。
+
+## 7. 固定工作流与分层并行实测（真实模型）
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/workflows/software_development/runs?wait=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个最小 FastAPI 服务\",\"max_parallel\":2,\"max_repair_rounds\":0}"
+```
+
+7 个任务按 6 层执行，日志：
+
+```
+19:22:49 并行层启动：2 个任务（S3, S4）
+19:22:49 任务 S3 启动（owner=developer，context=207 字符）
+19:22:49 任务 S4 启动（owner=tester，context=207 字符）
+19:23:36 并行层启动：1 个任务（S5）      ← 等 S3/S4 都结束才进入下一层
+```
+
+S3 用时 20.6s、S4 用时 46.2s，并行层总耗时取两者最大值而不是相加（67s）。
+全链路 154s，评审驳回（测试执行证据缺失），`max_repair_rounds=0`：
+
+```
+status = rejected
+execution_status = completed
+acceptance.status = rejected
+acceptance.verdict = 驳回
+needs_human = true
+```
+
+这同时验证了「执行完成 ≠ 验收通过」和「轮次耗尽转人工」两条降级路径。
+
 

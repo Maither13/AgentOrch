@@ -2,10 +2,11 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import agents, chat, runs, system
+from app.api.v1 import agents, chat, runs, system, workflows
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(chat.router)
 api_router.include_router(agents.router)
 api_router.include_router(runs.router)
+api_router.include_router(workflows.router)

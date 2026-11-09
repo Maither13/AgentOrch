@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.orchestration.models import RunStatus, TaskSpec
+from app.orchestration.workflow import WorkflowStep
 
 Role = Literal["system", "user", "assistant"]
 
@@ -179,9 +180,27 @@ class RunSummary(BaseModel):
     rounds: int = 0
     goal: str | None = None
     plan_source: str = "manual"
+    workflow: str | None = None
     total: int
     completed: int
     failed: int
     skipped: int
     created_at: datetime
     finished_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 工作流
+# --------------------------------------------------------------------------- #
+class WorkflowOut(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    steps: list[WorkflowStep]
+    layers: list[list[str]]
+
+
+class WorkflowRunRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2_000)
+    max_repair_rounds: int = Field(default=2, ge=0, le=5)
+    max_parallel: int = Field(default=3, ge=1, le=5)

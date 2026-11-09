@@ -34,6 +34,7 @@ def _summary(run: RunState) -> RunSummary:
         rounds=run.rounds,
         goal=run.goal,
         plan_source=run.plan_source,
+        workflow=run.workflow,
         total=len(run.tasks),
         completed=run.count(TaskStatus.completed),
         failed=run.count(TaskStatus.failed),

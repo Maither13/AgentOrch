@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -120,6 +121,8 @@ async def execute_run(
     *,
     workspace: Workspace | None = None,
     max_rounds: int = 0,
+    parallel: bool = False,
+    max_parallel: int = 3,
 ) -> None:
     """执行任务列表，并在验收驳回时进入 Self-Loop。异常兜底，保证落到终态。"""
     workspace = workspace or Workspace.for_run(run.id)
@@ -129,7 +132,10 @@ async def execute_run(
     run.started_at = utcnow()
 
     try:
-        await execute_pending(run, team, workspace)
+        if parallel:
+            await execute_layers(run, team, workspace, max_parallel=max_parallel)
+        else:
+            await execute_pending(run, team, workspace)
         evaluate_acceptance(run)
 
         round_no = 0
@@ -143,6 +149,7 @@ async def execute_run(
                 len(appended),
                 ", ".join(state.spec.id for state in appended),
             )
+            # 修复链本身是串行的：修复 → 复评
             await execute_pending(run, team, workspace)
             evaluate_acceptance(run)
 
@@ -185,6 +192,61 @@ async def execute_pending(run: RunState, team: Team, workspace: Workspace) -> No
             logger.warning("跳过任务 %s（%s）", state.spec.id, state.error)
             continue
         await _execute_task(state, dependencies, team, workspace)
+
+
+async def execute_layers(
+    run: RunState,
+    team: Team,
+    workspace: Workspace,
+    *,
+    max_parallel: int = 3,
+) -> None:
+    """分层并行：每一波只执行依赖已全部完成的任务，层内用 asyncio.gather 并发。"""
+    by_id = {state.spec.id: state for state in run.tasks}
+    semaphore = asyncio.Semaphore(max(1, max_parallel))
+
+    while True:
+        pending = [state for state in run.tasks if state.status is TaskStatus.pending]
+        if not pending:
+            return
+
+        ready: list[TaskState] = []
+        skipped_any = False
+        for state in pending:
+            dependencies = [by_id[item] for item in state.spec.depends_on if item in by_id]
+            failed_deps = [
+                dep.spec.id
+                for dep in dependencies
+                if dep.status in {TaskStatus.failed, TaskStatus.skipped}
+            ]
+            if failed_deps:
+                state.status = TaskStatus.skipped
+                state.error = f"上游任务未成功：{', '.join(failed_deps)}"
+                state.finished_at = utcnow()
+                logger.warning("跳过任务 %s（%s）", state.spec.id, state.error)
+                skipped_any = True
+                continue
+            if all(dep.status is TaskStatus.completed for dep in dependencies):
+                ready.append(state)
+
+        if not ready:
+            if skipped_any:
+                continue
+            logger.error("分层执行卡住：没有就绪任务，剩余 %d 个", len(pending))
+            return
+
+        logger.info(
+            "并行层启动：%d 个任务（%s）",
+            len(ready),
+            ", ".join(state.spec.id for state in ready),
+        )
+
+        async def run_one(state: TaskState) -> None:
+            async with semaphore:
+                dependencies = [by_id[item] for item in state.spec.depends_on if item in by_id]
+                await _execute_task(state, dependencies, team, workspace)
+
+        await asyncio.gather(*(run_one(state) for state in ready))
 
 
 async def _execute_task(

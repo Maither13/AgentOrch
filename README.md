@@ -1,13 +1,13 @@
 # AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
-> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** + **验收维度 / 落盘交接 / Self-Loop** 已完成。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** + **验收维度 / 落盘交接 / Self-Loop** + **固定工作流与分层并行** 已完成。
 
 第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 定义了 6 个固定角色、
 写死工具权限，并用一份 JSON 描述团队；模块 2 实现了
 「任务清单 → 依赖检查 → 拓扑排序 → 顺序执行」的调度闭环；
-之后又把「执行状态」和「验收结论」拆成两个正交维度，代码改为落盘交接，
-并在验收驳回时自动进入修复循环。
+之后把「执行状态」和「验收结论」拆成两个正交维度，代码改为落盘交接，
+并在验收驳回时自动进入修复循环；最后补上了固定工作流模板和层内并行执行。
 
 ![联调台](docs/console.png)
 
@@ -30,11 +30,13 @@
 | 工作区落盘 | 每个 run 独立 `data/workspaces/<run_id>/`，代码与产出可打开、可追溯 |
 | 文件工具 | `file_list` / `file_read` / `file_write`，Agent 按权限调用，交接只给清单 |
 | Self-Loop | 验收驳回后自动追加「修复 + 复评」任务，最多 N 轮，超限转人工 |
+| 固定工作流 | `WorkflowStep`（step_name + agent + depends_on）+ 软件工程模板 |
+| 分层并行 | 拓扑分层，层内 `asyncio.gather` 并发，信号量限流 |
 | 运行记录 | 内存存储任务状态、耗时、token 与输出，支持运行详情查询 |
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 62 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区与 Self-Loop |
+| 单元测试 | 70 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop 与并行工作流 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -227,6 +229,64 @@ cd AgentOrch\backend
 另外用一个「首轮故意缺测试」的 2 任务场景实测了 Self-Loop：评审驳回 → 自动追加
 `R1-fix` / `R1-review` → 补齐测试后复评通过，`rounds=1`。
 
+## 模块 4：固定工作流与分层并行
+
+### 数据结构
+
+```python
+class WorkflowStep(BaseModel):
+    step_name: str
+    agent: str
+    depends_on: list[str] = []
+```
+
+一个工作流模板就是一组 `WorkflowStep`。内置模板 `software_development`：
+
+| 层 | 步骤 | 负责 Agent | 依赖 |
+| --- | --- | --- | --- |
+| L1 | 需求分析 | product_manager | — |
+| L2 | 技术设计 | architect | 需求分析 |
+| L3 | **接口实现** | developer | 技术设计 |
+| L3 | **测试设计** | tester | 技术设计 |
+| L4 | 测试执行 | tester | 接口实现、测试设计 |
+| L5 | 代码评审 | reviewer | 测试执行 |
+| L6 | 交付汇总 | captain | 代码评审 |
+
+L3 的两个步骤没有相互依赖，会并行执行。
+
+### 拓扑分层
+
+Kahn 算法按层输出（同一层内互不依赖），层与层之间是屏障。校验覆盖：
+步骤名重复、未知 Agent、悬空依赖、依赖自己、环（报 `workflow_cycle`）。
+
+### 分层并行执行
+
+- 每一波扫描所有 pending 任务，依赖全部 `completed` 的进入就绪集合；
+- 层内用 `asyncio.gather` 并发，`Semaphore(max_parallel)` 限流（默认 3）；
+- 上游失败的任务直接 `skipped`，不阻塞同层无关任务；
+- Self-Loop 的修复链（`R<n>-fix` → `R<n>-review`）保持串行。
+
+### 接口
+
+```powershell
+# 模板列表 / 详情
+curl.exe http://127.0.0.1:8000/api/v1/workflows
+curl.exe http://127.0.0.1:8000/api/v1/workflows/software_development
+
+# 按模板发起运行（默认异步，wait=true 同步等结果）
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/workflows/software_development/runs?wait=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个最小 FastAPI 服务\",\"max_parallel\":2,\"max_repair_rounds\":0}"
+```
+
+响应里 `workflow=software_development`、`plan_source=workflow`；
+步骤名是中文，落盘任务 id 自动映射为 `S1…S7`，依赖关系同步映射。
+
+实测：7 个任务按 6 层执行，L3 的 S3 / S4 在同一秒启动（19:22:49），等最慢的 S4
+结束后才进入 S5，全链路 154s。评审最终驳回（缺 pytest 执行证据），
+`max_repair_rounds=0` → `status=rejected`、`execution_status=completed`、`needs_human=true`，
+正好验证了「执行完成但验收不通过」的降级路径。
+
 ## 目录结构
 
 ```
@@ -242,7 +302,8 @@ AgentOrch/
 │   │   │       ├── system.py    # 健康检查、模型列表、LLM ping
 │   │   │       ├── chat.py      # 普通对话 + SSE 流式对话
 │   │   │       ├── agents.py    # 角色、工具、团队、单 Agent 试跑
-│   │   │       └── runs.py      # 依赖校验、创建运行、查询运行
+│   │   │       ├── runs.py      # 依赖校验、创建运行、查询运行
+│   │   │       └── workflows.py # 固定工作流模板与运行入口
 │   │   ├── agents/
 │   │   │   ├── base.py          # BaseAgent / AgentSpec / AgentRunResult
 │   │   │   ├── tools.py         # 工具注册表与权限异常
@@ -253,7 +314,8 @@ AgentOrch/
 │   │   ├── orchestration/
 │   │   │   ├── models.py        # TaskSpec / TaskState / RunState / AcceptanceState
 │   │   │   ├── planner.py       # 队长输出解析、任务校验
-│   │   │   ├── scheduler.py     # 依赖校验、拓扑排序、顺序执行
+│   │   │   ├── scheduler.py     # 依赖校验、拓扑排序、顺序 / 分层并行执行
+│   │   │   ├── workflow.py      # WorkflowStep、固定模板、拓扑分层
 │   │   │   ├── acceptance.py    # 评审结论解析（通过 / 驳回）
 │   │   │   ├── self_loop.py     # 驳回后追加修复与复评任务
 │   │   │   ├── workspace.py     # 运行工作区：落盘、清单、文件工具执行
@@ -327,10 +389,13 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | POST | `/api/v1/runs` | 创建并执行（给 tasks 直接跑，只给 goal 先拆解） |
 | GET | `/api/v1/runs` | 最近运行列表（摘要，不含输出） |
 | GET | `/api/v1/runs/{run_id}` | 运行详情（含每个任务的输出与用量） |
+| GET | `/api/v1/workflows` | 内置工作流模板（含拓扑分层） |
+| GET | `/api/v1/workflows/{workflow_id}` | 模板详情 |
+| POST | `/api/v1/workflows/{workflow_id}/runs` | 按模板发起运行（分层并行） |
 
 `POST /runs` 的 `max_repair_rounds` 控制验收驳回后的修复轮次（默认 2，0 表示不循环）。
 Run 响应里除了任务列表，还包含 `execution_status`、`acceptance`、`rounds`、
-`needs_human` 与 `workspace_dir`。
+`needs_human` 与 `workspace_dir`；固定工作流的运行还会带 `workflow`。
 
 ### 调用示例
 
@@ -416,14 +481,15 @@ cd AgentOrch\backend
   避免几万字的代码在上下文里被截断。
 - **工具调用双层兼容**：优先标准 `tool_calls`；上游网关偶尔把调用写成 DSML 文本时，
   自动解析并执行，避免工具调用半途丢失。
+- **固定模板与自由拆解并存**：自由拆解靠队长，适合开放需求；固定模板靠 `WorkflowStep`
+  把标准流程固化下来，适合演示与回归。
 
 ## 下一步
 
 1. **代码执行工具**：`python_exec` / `test_runner` 真正跑起来，让测试 Agent 能执行 pytest，而不只是写用例
-2. **并行调度**：无依赖任务并发执行（信号量限流），把「顺序」升级成「分层并行」
-3. **结构化验收**：把评审表格解析成「每条 AC 的通过情况」，修复任务只带失败项
-4. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
-5. **实时推送**：WebSocket 事件总线，前端监控面板接入
-6. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
+2. **结构化验收**：把评审表格解析成「每条 AC 的通过情况」，修复任务只带失败项
+3. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
+4. **实时推送**：WebSocket 事件总线，前端监控面板接入
+5. **前端编排画布**：Vue 3 + AntV X6，拖拽生成工作流
 
 > 详细设计见《AgentOrch_设计方案.docx》，验证步骤见 [docs/verification.md](docs/verification.md)。
