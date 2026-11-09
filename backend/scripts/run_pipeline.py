@@ -22,6 +22,7 @@ from app.llm.client import DeepSeekClient  # noqa: E402
 from app.orchestration.models import RunState, TaskState  # noqa: E402
 from app.orchestration.planner import plan_tasks  # noqa: E402
 from app.orchestration.scheduler import execute_run  # noqa: E402
+from app.orchestration.workspace import Workspace  # noqa: E402
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -46,19 +47,20 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
 
         run = RunState(
-            id="cli-run",
+            id=f"cli-{int(time.time())}",
             goal=args.goal,
             plan_source="captain",
             tasks=[TaskState(spec=task) for task in plan.tasks],
         )
+        workspace = Workspace.for_run(run.id)
         print("\n开始顺序执行…")
         started = time.perf_counter()
-        await execute_run(run, team)
+        await execute_run(run, team, workspace=workspace, max_rounds=args.max_rounds)
 
         print()
         for state in run.tasks:
             print(
-                f"  [{state.status:<9}] {state.spec.id:<4} {state.spec.title:<10}"
+                f"  [{state.status:<9}] {state.spec.id:<8} {state.spec.title:<10}"
                 f" {state.duration_ms or 0:>6}ms  {state.usage.total_tokens:>5} tokens"
             )
             if state.error:
@@ -67,7 +69,13 @@ async def _run(args: argparse.Namespace) -> int:
                 preview = state.output.strip().replace("\n", " ")[:220]
                 print(f"      {preview}…")
 
-        print(f"\nrun={run.status}  总耗时 {time.perf_counter() - started:.1f}s")
+        print(
+            f"\n执行状态={run.execution_status}  验收状态={run.acceptance.status}"
+            f"  结论={run.acceptance.verdict or '—'}  修复轮次={run.rounds}"
+            f"  需人工={run.needs_human}"
+        )
+        print(f"工作区：{workspace.root}")
+        print(f"总耗时 {time.perf_counter() - started:.1f}s")
         return 0 if run.status == "completed" else 1
     finally:
         await llm.aclose()
@@ -82,6 +90,7 @@ def main() -> int:
     parser.add_argument("--team", default="software_team", help="团队配置 id")
     parser.add_argument("--plan-only", action="store_true", help="只拆解不执行")
     parser.add_argument("--show-output", action="store_true", help="打印每个任务输出的前 220 字")
+    parser.add_argument("--max-rounds", type=int, default=2, help="验收驳回后的最大修复轮次")
     parser.add_argument("--mock", action="store_true", help="本地模拟，不调用真实模型")
     args = parser.parse_args()
     return asyncio.run(_run(args))

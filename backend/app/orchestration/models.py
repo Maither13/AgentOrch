@@ -32,6 +32,32 @@ class RunStatus(StrEnum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    # 执行完成但评审验收未通过
+    rejected = "rejected"
+
+
+class ExecutionStatus(StrEnum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class AcceptanceStatus(StrEnum):
+    pending = "pending"
+    passed = "passed"
+    rejected = "rejected"
+
+
+class AcceptanceState(BaseModel):
+    """评审 Agent 给出的验收结论，与执行状态正交。"""
+
+    status: AcceptanceStatus = AcceptanceStatus.pending
+    verdict: str | None = None  # 通过 / 有条件通过 / 驳回
+    summary: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    reviewer_task: str | None = None
+    reviewed_at: datetime | None = None
 
 
 class TaskSpec(BaseModel):
@@ -61,6 +87,8 @@ class TaskState(BaseModel):
     mode: str | None = None
     output: str | None = None
     error: str | None = None
+    # 本次任务新建或修改的工作区文件
+    files: list[str] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -70,10 +98,16 @@ class TaskState(BaseModel):
 class RunState(BaseModel):
     id: str
     status: RunStatus = RunStatus.pending
+    # 两个正交维度：调度器看 execution_status，评审看 acceptance
+    execution_status: ExecutionStatus = ExecutionStatus.pending
+    acceptance: AcceptanceState = Field(default_factory=AcceptanceState)
     goal: str | None = None
     # manual：调用方直接给任务清单；captain：由队长拆解生成
     plan_source: str = "manual"
     planning_ms: int | None = None
+    rounds: int = 0
+    needs_human: bool = False
+    workspace_dir: str | None = None
     tasks: list[TaskState]
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None

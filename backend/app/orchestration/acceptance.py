@@ -1,0 +1,84 @@
+"""验收结论解析：从评审 Agent 的输出里提取「通过 / 驳回」。
+
+执行状态由调度器负责（有没有异常），验收状态由评审 Agent 负责（内容合不合格），
+两者互不覆盖——这就是工程上常说的「执行 ≠ 验收」。
+"""
+
+from __future__ import annotations
+
+import re
+
+from app.orchestration.models import (
+    AcceptanceState,
+    AcceptanceStatus,
+    RunState,
+    TaskStatus,
+    utcnow,
+)
+
+_CONCLUSION_KEYS = ("总体结论", "最终结论", "验收结论")
+_VERDICT_RE = re.compile(r"(有条件通过|驳回|通过)")
+
+
+def parse_review(text: str) -> tuple[AcceptanceStatus, str | None, str, list[str]]:
+    """返回 (验收状态, 结论原文, 结论摘要, 阻断项)。"""
+    if not text:
+        return AcceptanceStatus.pending, None, "", []
+
+    index = -1
+    for key in _CONCLUSION_KEYS:
+        index = text.find(key)
+        if index != -1:
+            break
+    if index == -1:
+        return AcceptanceStatus.pending, None, "", []
+
+    section = text[index : index + 600].strip()
+    match = _VERDICT_RE.search(section)
+    if match is None:
+        return AcceptanceStatus.pending, None, section, []
+
+    verdict = match.group(1)
+    status = AcceptanceStatus.rejected if verdict == "驳回" else AcceptanceStatus.passed
+    return status, verdict, section, _extract_blockers(text)
+
+
+def _extract_blockers(text: str) -> list[str]:
+    index = text.find("阻断项")
+    if index == -1:
+        return []
+    blockers: list[str] = []
+    for raw in text[index : index + 800].splitlines()[1:]:
+        line = raw.strip().lstrip("-*0123456789. 、")
+        if not line or line.startswith("#"):
+            continue
+        blockers.append(line[:160])
+        if len(blockers) >= 5:
+            break
+    return blockers
+
+
+def evaluate_acceptance(run: RunState) -> AcceptanceState:
+    """取最近一次完成的评审任务输出，更新 run.acceptance。"""
+    reviewers = [
+        state
+        for state in run.tasks
+        if state.spec.owner == "reviewer"
+        and state.status is TaskStatus.completed
+        and state.output
+    ]
+    if not reviewers:
+        run.acceptance = AcceptanceState()
+        return run.acceptance
+
+    latest = reviewers[-1]
+    status, verdict, summary, blockers = parse_review(latest.output or "")
+    run.acceptance = AcceptanceState(
+        status=status,
+        verdict=verdict,
+        summary=summary,
+        blockers=blockers,
+        reviewer_task=latest.spec.id,
+        reviewed_at=utcnow(),
+    )
+    return run.acceptance

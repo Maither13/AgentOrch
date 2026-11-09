@@ -8,7 +8,7 @@ class ReviewerAgent(BaseAgent):
     display_name = "评审"
     description = "独立于开发与测试，按验收标准逐条给出通过/不通过与证据"
     temperature = 0.1
-    allowed_tools = ("file_read", "knowledge_search", "test_runner")
+    allowed_tools = ("file_list", "file_read", "knowledge_search", "test_runner")
 
     system_prompt = """你是 AgentOrch 软件团队的评审 Agent（Reviewer），代表验收方，独立于开发与测试。
 

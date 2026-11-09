@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Iterable
+from typing import TYPE_CHECKING, ClassVar, Iterable
 
+from app.agents.tooling import schemas_for
 from app.agents.tools import (
     TOOL_REGISTRY,
     ToolPermissionError,
@@ -17,6 +18,9 @@ from app.agents.tools import (
 )
 from app.core.errors import AppError
 from app.llm.client import DeepSeekClient, Usage
+
+if TYPE_CHECKING:
+    from app.orchestration.workspace import Workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,20 +121,40 @@ class BaseAgent:
         context: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        workspace: "Workspace | None" = None,
     ) -> AgentRunResult:
         task = (task or "").strip()
         if not task:
             raise AppError("任务内容不能为空", status_code=400, code="empty_task")
 
-        result = await self.llm.chat(
-            [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": self._compose_user_message(task, context)},
-            ],
-            model=self.model,
-            temperature=self.temperature if temperature is None else temperature,
-            max_tokens=max_tokens,
-        )
+        tools = schemas_for(self.allowed_tools) if workspace is not None else []
+        system_prompt = self.system_prompt
+        if tools:
+            system_prompt += self.WORKSPACE_NOTE
+            if "file_write" not in self.allowed_tools:
+                system_prompt += self.READONLY_WORKSPACE_NOTE
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": self._compose_user_message(task, context)},
+        ]
+        temperature = self.temperature if temperature is None else temperature
+
+        if tools and workspace is not None:
+            result = await self.llm.chat_with_tools(
+                messages,
+                tools=tools,
+                execute=self._tool_executor(workspace),
+                model=self.model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            result = await self.llm.chat(
+                messages,
+                model=self.model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         return AgentRunResult(
             agent_id=self.id,
             role=self.role,
@@ -148,6 +172,26 @@ class BaseAgent:
         if not context or not context.strip():
             return task
         return f"## 上游背景与产物\n{context.strip()}\n\n## 你的任务\n{task}"
+
+    WORKSPACE_NOTE = """
+## 工作区
+本次任务的所有代码与产出都在运行工作区中，文件内容不会直接贴在对话里。
+可用工具：file_list（列目录）、file_read（读文件）、file_write（写文件）。
+先 file_list 看清现状，再按需 file_read；写完代码必须 file_write 落盘。不要臆造文件内容。
+做完必要的读写后就给出最终答复，不要为了凑信息反复调用工具。
+"""
+
+    READONLY_WORKSPACE_NOTE = """
+你只有读取权限，没有写入权限。评审/分析结论直接写在回复正文里，不要尝试写文件。
+"""
+
+    def _tool_executor(self, workspace: "Workspace"):
+        def execute(name: str, arguments: dict) -> dict:
+            if not self.can_use(name):
+                raise ToolPermissionError(self.id, [name])
+            return workspace.execute(name, arguments)
+
+        return execute
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<{type(self).__name__} id={self.id}>"

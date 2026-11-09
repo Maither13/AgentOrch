@@ -139,6 +139,7 @@ class RunCreate(BaseModel):
 
     goal: str | None = Field(default=None, max_length=2_000)
     tasks: list[TaskSpec] | None = Field(default=None, min_length=1, max_length=20)
+    max_repair_rounds: int = Field(default=2, ge=0, le=5, description="验收驳回后的最大修复轮次")
 
     @model_validator(mode="after")
     def _require_input(self) -> "RunCreate":
@@ -174,6 +175,8 @@ class TaskListRequest(BaseModel):
 class RunSummary(BaseModel):
     id: str
     status: RunStatus
+    acceptance_status: str = "pending"
+    rounds: int = 0
     goal: str | None = None
     plan_source: str = "manual"
     total: int

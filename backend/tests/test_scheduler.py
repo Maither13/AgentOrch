@@ -12,6 +12,7 @@ from app.core.errors import AppError
 from app.llm.client import Usage
 from app.orchestration.models import RunState, TaskSpec, TaskState, TaskStatus
 from app.orchestration.scheduler import execute_run, validate_task_list
+from app.orchestration.workspace import Workspace
 
 TASKS = [
     {"id": "T1", "title": "需求规格", "goal": "写需求文档", "owner": "product_manager"},
@@ -114,7 +115,7 @@ class FakeAgent:
         self.fail = fail
         self.calls: list[tuple[str, str | None]] = []
 
-    async def run(self, task, *, context=None, temperature=None, max_tokens=None):
+    async def run(self, task, *, context=None, temperature=None, max_tokens=None, workspace=None):
         self.calls.append((task, context))
         if self.fail:
             raise AppError("模拟模型失败", status_code=502, code="llm_error")
@@ -147,7 +148,7 @@ def _fake_team():
 
 
 @pytest.mark.asyncio
-async def test_failure_skips_downstream_and_keeps_independent_tasks():
+async def test_failure_skips_downstream_and_keeps_independent_tasks(tmp_path):
     team, developer, tester, reviewer = _fake_team()
     tasks = [
         TaskSpec(id="T1", title="需求", goal="写需求", owner="developer"),
@@ -158,7 +159,7 @@ async def test_failure_skips_downstream_and_keeps_independent_tasks():
     ordered = validate_task_list(tasks, set(team.members))
     run = RunState(id="run-fake", tasks=[TaskState(spec=task) for task in ordered])
 
-    await execute_run(run, team)
+    await execute_run(run, team, workspace=Workspace(tmp_path))
 
     statuses = {state.spec.id: state.status for state in run.tasks}
     assert statuses == {
@@ -175,7 +176,7 @@ async def test_failure_skips_downstream_and_keeps_independent_tasks():
 
 
 @pytest.mark.asyncio
-async def test_downstream_skipped_when_upstream_fails():
+async def test_downstream_skipped_when_upstream_fails(tmp_path):
     team, _, _, _ = _fake_team()
     team.members["tester"] = FakeAgent("测试", fail=True)
     tasks = [
@@ -186,7 +187,7 @@ async def test_downstream_skipped_when_upstream_fails():
     ordered = validate_task_list(tasks, set(team.members))
     run = RunState(id="run-skip", tasks=[TaskState(spec=task) for task in ordered])
 
-    await execute_run(run, team)
+    await execute_run(run, team, workspace=Workspace(tmp_path))
 
     statuses = {state.spec.id: state.status for state in run.tasks}
     assert statuses["T2"] == TaskStatus.failed
@@ -195,7 +196,7 @@ async def test_downstream_skipped_when_upstream_fails():
 
 
 @pytest.mark.asyncio
-async def test_upstream_output_injected_as_context():
+async def test_upstream_output_injected_as_context(tmp_path):
     team, _, _, _ = _fake_team()
     tasks = [
         TaskSpec(id="T1", title="需求", goal="写需求", owner="developer"),
@@ -204,9 +205,11 @@ async def test_upstream_output_injected_as_context():
     ordered = validate_task_list(tasks, set(team.members))
     run = RunState(id="run-context", tasks=[TaskState(spec=task) for task in ordered])
 
-    await execute_run(run, team)
+    await execute_run(run, team, workspace=Workspace(tmp_path))
 
     _, context = team.members["tester"].calls[0]
     assert context is not None
-    assert "T1 需求" in context
-    assert "开发产出" in context
+    # 交接只给清单：能定位到产出文件，但不贴全文
+    assert "tasks/T1.md" in context
+    assert "工作区" in context
+    assert "开发产出" not in context

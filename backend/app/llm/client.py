@@ -15,7 +15,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Sequence
+from typing import AsyncIterator, Callable, Sequence
 
 from openai import (
     APIConnectionError,
@@ -29,6 +29,7 @@ from openai import (
 
 from app.core.config import Settings
 from app.core.errors import LLMError
+from app.llm.dsml import parse_dsml_calls, strip_dsml
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,14 @@ class StreamChunk:
     reasoning_content: str = ""
     finish_reason: str | None = None
     usage: Usage | None = None
+
+
+def _merge_usage(current: Usage, extra: Usage) -> Usage:
+    return Usage(
+        prompt_tokens=current.prompt_tokens + extra.prompt_tokens,
+        completion_tokens=current.completion_tokens + extra.completion_tokens,
+        total_tokens=current.total_tokens + extra.total_tokens,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +204,124 @@ class DeepSeekClient:
         except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from exc
 
+    async def chat_with_tools(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[dict],
+        execute: Callable[[str, dict], dict],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_rounds: int = 5,
+    ) -> ChatResult:
+        """带 function calling 的多轮对话：模型要求调工具时，执行后把结果喂回去。"""
+        model = model or self.default_model
+        if self._mode == "mock":
+            return await self._mock_chat(messages, model)
+
+        client = self._require_client()
+        started = time.perf_counter()
+        conversation: list[dict] = [dict(message) for message in messages]
+        usage = Usage()
+        last_content = ""
+
+        try:
+            for _ in range(max_rounds):
+                payload = self._payload(conversation, model, temperature, max_tokens, False)
+                payload["tools"] = list(tools)
+                payload["tool_choice"] = "auto"
+                response = await client.chat.completions.create(**payload)
+                usage = _merge_usage(usage, self._usage_of(response.usage))
+                choice = response.choices[0]
+                message = choice.message
+                raw_content = message.content or ""
+
+                calls: list[tuple[str, str, str]] = [
+                    (call.id, call.function.name, call.function.arguments)
+                    for call in (message.tool_calls or [])
+                ]
+                dsml_used = False
+                if not calls:
+                    # 兜底：网关偶尔把工具调用写成 DSML 文本
+                    dsml_calls = parse_dsml_calls(raw_content)
+                    if not dsml_calls:
+                        return ChatResult(
+                            id=response.id or f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                            model=response.model or model,
+                            content=strip_dsml(raw_content),
+                            latency_ms=int((time.perf_counter() - started) * 1000),
+                            mode=self._mode,
+                            usage=usage,
+                            finish_reason=choice.finish_reason,
+                        )
+                    dsml_used = True
+                    calls = [
+                        (
+                            f"dsml-{uuid.uuid4().hex[:8]}-{index}",
+                            name,
+                            json.dumps(arguments, ensure_ascii=False),
+                        )
+                        for index, (name, arguments) in enumerate(dsml_calls)
+                    ]
+
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": "" if dsml_used else raw_content,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": arguments},
+                            }
+                            for call_id, name, arguments in calls
+                        ],
+                    }
+                )
+                if raw_content.strip() and not dsml_used:
+                    last_content = strip_dsml(raw_content)
+                for call_id, name, arguments_json in calls:
+                    try:
+                        arguments = json.loads(arguments_json or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    try:
+                        result = execute(name, arguments)
+                    except Exception as exc:  # noqa: BLE001 —— 工具错误回给模型自行修正
+                        result = {"error": f"{type(exc).__name__}: {exc}"}
+                    conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+
+            # 工具轮次用尽，强制模型基于已有信息收口
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": "请直接输出最终答复，不要再调用任何工具，也不要输出工具调用标记。",
+                }
+            )
+            payload = self._payload(conversation, model, temperature, max_tokens, False)
+            response = await client.chat.completions.create(**payload)
+            usage = _merge_usage(usage, self._usage_of(response.usage))
+            message = response.choices[0].message
+            content = strip_dsml(message.content or "") or last_content
+            return ChatResult(
+                id=response.id or f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                model=response.model or model,
+                content=content,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                mode=self._mode,
+                usage=usage,
+                finish_reason=response.choices[0].finish_reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise self._translate(exc) from exc
+
     async def ping(self) -> ChatResult:
         """连通性探针：最小 token 的真实调用，用于验证 Key / 网络 / 模型。"""
         return await self.chat(
@@ -226,7 +353,7 @@ class DeepSeekClient:
     ) -> dict:
         payload: dict = {
             "model": model,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
+            "messages": [dict(m) for m in messages],
             "stream": False,
         }
         # deepseek-reasoner 不接受 temperature 等采样参数

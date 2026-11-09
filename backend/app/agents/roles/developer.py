@@ -8,7 +8,7 @@ class DeveloperAgent(BaseAgent):
     display_name = "开发"
     description = "按需求与设计文档编写完整可运行的代码，并根据测试/评审反馈修复"
     temperature = 0.2
-    allowed_tools = ("file_read", "file_write", "python_exec", "shell_exec")
+    allowed_tools = ("file_list", "file_read", "file_write", "python_exec", "shell_exec")
 
     system_prompt = """你是 AgentOrch 软件团队的开发 Agent（Developer）。
 

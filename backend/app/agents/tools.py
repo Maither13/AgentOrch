@@ -28,6 +28,7 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "web_search": ToolSpec("web_search", "联网搜索", "检索公开资料，补充领域知识与技术方案依据"),
     "file_read": ToolSpec("file_read", "读取文件", "读取工作区中的代码与文档"),
     "file_write": ToolSpec("file_write", "写入文件", "在工作区创建或修改文件"),
+    "file_list": ToolSpec("file_list", "列出文件", "列出运行工作区中的代码与产出文件"),
     "python_exec": ToolSpec("python_exec", "Python 执行", "在沙箱中执行 Python 代码片段"),
     "shell_exec": ToolSpec("shell_exec", "命令执行", "执行受限的 shell 命令（安装依赖、运行脚本）"),
     "test_runner": ToolSpec("test_runner", "测试执行", "运行 pytest 并收集测试报告"),

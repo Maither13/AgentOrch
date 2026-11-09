@@ -1,11 +1,10 @@
-"""任务调度器：依赖校验 + 顺序执行。
+"""任务调度器：依赖校验 + 顺序执行 + 验收 + Self-Loop。
 
 执行模型：
 1. 先把任务列表校验成一张合法 DAG（id 唯一、负责人存在、依赖存在、无环）；
 2. 按拓扑序逐个执行；某任务失败时，它的下游全部标记 skipped，无关任务继续执行；
-3. 每个任务通过队长/成员 Agent 的 `run()` 调用模型，上游产出作为 context 注入。
-
-这一版是单线程顺序执行，故意不引入并发、重试与持久化——先把状态机跑对。
+3. 代码与产出落盘到运行工作区，下游只拿清单，通过文件工具按需读取；
+4. 执行结束后由评审 Agent 给验收结论；驳回则追加「修复 + 复评」任务并重跑。
 """
 
 from __future__ import annotations
@@ -16,7 +15,10 @@ from collections import defaultdict
 
 from app.agents.registry import Team
 from app.core.errors import AppError
+from app.orchestration.acceptance import evaluate_acceptance
 from app.orchestration.models import (
+    AcceptanceStatus,
+    ExecutionStatus,
     RunState,
     RunStatus,
     TaskSpec,
@@ -25,14 +27,12 @@ from app.orchestration.models import (
     TokenUsage,
     utcnow,
 )
+from app.orchestration.self_loop import append_repair_tasks
+from app.orchestration.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 MAX_TASKS = 20
-# 单个上游产物和总上下文的上限，避免 prompt 爆炸。
-# 代码类产出动辄上万字，上限给得比文档场景宽；真正解耦要靠工具读写文件，而不是靠拼 prompt。
-MAX_DEP_CONTEXT_CHARS = 30_000
-MAX_TOTAL_CONTEXT_CHARS = 80_000
 
 
 # --------------------------------------------------------------------------- #
@@ -114,42 +114,85 @@ def validate_task_list(tasks: list[TaskSpec], member_ids: set[str]) -> list[Task
 # --------------------------------------------------------------------------- #
 # 执行
 # --------------------------------------------------------------------------- #
-async def execute_run(run: RunState, team: Team) -> None:
-    """按顺序执行整个任务列表。异常兜底，保证 run 一定落到终态。"""
+async def execute_run(
+    run: RunState,
+    team: Team,
+    *,
+    workspace: Workspace | None = None,
+    max_rounds: int = 0,
+) -> None:
+    """执行任务列表，并在验收驳回时进入 Self-Loop。异常兜底，保证落到终态。"""
+    workspace = workspace or Workspace.for_run(run.id)
+    run.workspace_dir = str(workspace.root)
+    run.execution_status = ExecutionStatus.running
     run.status = RunStatus.running
     run.started_at = utcnow()
-    by_id = {state.spec.id: state for state in run.tasks}
 
     try:
-        for state in run.tasks:  # 已在创建时按拓扑序排列
-            if state.status is not TaskStatus.pending:
-                continue
-            dependencies = [by_id[item] for item in state.spec.depends_on]
-            unfinished = [dep.spec.id for dep in dependencies if dep.status is not TaskStatus.completed]
-            if unfinished:
-                # 上游失败/跳过，下游不再执行
-                state.status = TaskStatus.skipped
-                state.error = f"上游任务未成功：{', '.join(unfinished)}"
-                state.finished_at = utcnow()
-                logger.warning("跳过任务 %s（%s）", state.spec.id, state.error)
-                continue
-            await _execute_task(state, dependencies, team)
+        await execute_pending(run, team, workspace)
+        evaluate_acceptance(run)
+
+        round_no = 0
+        while run.acceptance.status is AcceptanceStatus.rejected and round_no < max_rounds:
+            round_no += 1
+            appended = append_repair_tasks(run, round_no)
+            run.rounds = round_no
+            logger.info(
+                "Self-Loop: 第 %d 轮修复，追加 %d 个任务（%s）",
+                round_no,
+                len(appended),
+                ", ".join(state.spec.id for state in appended),
+            )
+            await execute_pending(run, team, workspace)
+            evaluate_acceptance(run)
+
+        if run.acceptance.status is AcceptanceStatus.rejected:
+            run.needs_human = True
+            logger.warning(
+                "Self-Loop 结束：%d 轮修复后仍未通过，需要人工介入", run.rounds
+            )
     except Exception as exc:  # noqa: BLE001 —— 后台任务不能静默死掉
         logger.exception("调度器执行异常")
         run.error = f"调度器异常：{exc}"
     finally:
         run.finished_at = utcnow()
-        if not run.error:
-            run.status = (
-                RunStatus.failed
-                if any(state.status is TaskStatus.failed for state in run.tasks)
-                else RunStatus.completed
-            )
-        else:
+        failed = any(state.status is TaskStatus.failed for state in run.tasks)
+        if run.error or failed:
+            run.execution_status = ExecutionStatus.failed
             run.status = RunStatus.failed
+        else:
+            run.execution_status = ExecutionStatus.completed
+            if run.acceptance.status is AcceptanceStatus.rejected:
+                run.status = RunStatus.rejected
+            else:
+                run.status = RunStatus.completed
 
 
-async def _execute_task(state: TaskState, dependencies: list[TaskState], team: Team) -> None:
+async def execute_pending(run: RunState, team: Team, workspace: Workspace) -> None:
+    """按列表顺序执行所有 pending 任务（Self-Loop 追加的任务也走这里）。"""
+    by_id = {state.spec.id: state for state in run.tasks}
+    for state in list(run.tasks):
+        if state.status is not TaskStatus.pending:
+            continue
+        dependencies = [by_id[item] for item in state.spec.depends_on if item in by_id]
+        unfinished = [
+            dep.spec.id for dep in dependencies if dep.status is not TaskStatus.completed
+        ]
+        if unfinished:
+            state.status = TaskStatus.skipped
+            state.error = f"上游任务未成功：{', '.join(unfinished)}"
+            state.finished_at = utcnow()
+            logger.warning("跳过任务 %s（%s）", state.spec.id, state.error)
+            continue
+        await _execute_task(state, dependencies, team, workspace)
+
+
+async def _execute_task(
+    state: TaskState,
+    dependencies: list[TaskState],
+    team: Team,
+    workspace: Workspace,
+) -> None:
     agent = team.members.get(state.spec.owner)
     if agent is None:  # 校验阶段已挡住，这里只做兜底
         state.status = TaskStatus.failed
@@ -157,13 +200,21 @@ async def _execute_task(state: TaskState, dependencies: list[TaskState], team: T
         state.finished_at = utcnow()
         return
 
+    before = {item.path: item.sha256 for item in workspace.list_files()}
     state.status = TaskStatus.running
     state.started_at = utcnow()
     started = time.perf_counter()
-    context = build_context(dependencies)
+    context = build_context(state, dependencies, workspace)
+    logger.info(
+        "任务 %s 启动（owner=%s，context=%d 字符，工作区文件 %d 个）",
+        state.spec.id,
+        state.spec.owner,
+        len(context),
+        len(before),
+    )
 
     try:
-        result = await agent.run(state.spec.goal, context=context or None)
+        result = await agent.run(state.spec.goal, context=context, workspace=workspace)
     except AppError as exc:
         state.status = TaskStatus.failed
         state.error = f"[{exc.code}] {exc.message}"
@@ -183,28 +234,29 @@ async def _execute_task(state: TaskState, dependencies: list[TaskState], team: T
             completion_tokens=result.usage.completion_tokens,
             total_tokens=result.usage.total_tokens,
         )
+        # 产出全部落盘：先存完整回复，再从开发输出里兜底提取代码块
+        workspace.save_artifact(state.spec.id, result.content)
+        if state.spec.owner == "developer":
+            workspace.write_code_blocks(result.content)
+        after = {item.path: item.sha256 for item in workspace.list_files()}
+        state.files = [path for path, digest in after.items() if before.get(path) != digest]
     finally:
         state.finished_at = utcnow()
         state.duration_ms = int((time.perf_counter() - started) * 1000)
 
 
-def build_context(dependencies: list[TaskState]) -> str:
-    """把上游任务的产出拼成 context，单条和总量都做截断。"""
-    parts: list[str] = []
-    total = 0
-    for dep in dependencies:
-        if not dep.output:
-            continue
-        text = dep.output.strip()
-        original = len(text)
-        if original > MAX_DEP_CONTEXT_CHARS:
-            text = (
-                text[:MAX_DEP_CONTEXT_CHARS]
-                + f"\n…（内容过长，已从 {original} 字截断；如需完整内容请向队长申请拆分任务）"
+def build_context(
+    state: TaskState,
+    dependencies: list[TaskState],
+    workspace: Workspace,
+) -> str:
+    """交接只给清单，不给全文——正文通过 file_read 工具按需读取。"""
+    parts = ["## 工作区（代码与产出已落盘，可用文件工具读取）", workspace.manifest()]
+    if dependencies:
+        parts.append("## 上游任务")
+        for dep in dependencies:
+            parts.append(
+                f"- {dep.spec.id} {dep.spec.title}（{dep.spec.owner}）"
+                f"→ tasks/{dep.spec.id}.md"
             )
-        block = f"### {dep.spec.id} {dep.spec.title}（{dep.spec.owner}）\n{text}"
-        if total + len(block) > MAX_TOTAL_CONTEXT_CHARS:
-            break
-        parts.append(block)
-        total += len(block)
-    return "\n\n".join(parts)
+    return "\n".join(parts)

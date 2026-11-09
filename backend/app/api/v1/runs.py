@@ -21,6 +21,7 @@ from app.orchestration.models import RunState, RunStatus, TaskState, TaskStatus
 from app.orchestration.planner import plan_tasks
 from app.orchestration.scheduler import execute_run, validate_task_list
 from app.orchestration.store import RunStore
+from app.orchestration.workspace import Workspace
 
 router = APIRouter(tags=["runs"])
 
@@ -29,6 +30,8 @@ def _summary(run: RunState) -> RunSummary:
     return RunSummary(
         id=run.id,
         status=run.status,
+        acceptance_status=run.acceptance.status.value,
+        rounds=run.rounds,
         goal=run.goal,
         plan_source=run.plan_source,
         total=len(run.tasks),
@@ -93,7 +96,15 @@ async def create_run(
     )
     store.add(run)
 
-    execution = asyncio.create_task(execute_run(run, team))
+    workspace = Workspace.for_run(run.id)
+    execution = asyncio.create_task(
+        execute_run(
+            run,
+            team,
+            workspace=workspace,
+            max_rounds=payload.max_repair_rounds,
+        )
+    )
     store.track(execution)
 
     if wait:

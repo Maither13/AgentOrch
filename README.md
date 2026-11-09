@@ -1,11 +1,13 @@
 # AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
-> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** 已完成。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** + **验收维度 / 落盘交接 / Self-Loop** 已完成。
 
 第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 定义了 6 个固定角色、
-写死工具权限，并用一份 JSON 描述团队；模块 2 在此之上实现了
-「任务清单 → 依赖检查 → 拓扑排序 → 顺序执行」的最小调度闭环。
+写死工具权限，并用一份 JSON 描述团队；模块 2 实现了
+「任务清单 → 依赖检查 → 拓扑排序 → 顺序执行」的调度闭环；
+之后又把「执行状态」和「验收结论」拆成两个正交维度，代码改为落盘交接，
+并在验收驳回时自动进入修复循环。
 
 ![联调台](docs/console.png)
 
@@ -24,11 +26,15 @@
 | 单 Agent 试跑 | `POST /agents/{id}/run` 与 CLI，验证「prompt + 调 API」链路 |
 | 任务调度器 | 任务清单 + 依赖检查（含环检测）+ 拓扑排序 + 顺序执行 |
 | 队长自动拆解 | 一句 goal → 队长输出 DAG → 解析校验 → 顺序执行 |
+| 双维度状态 | 执行状态（调度器）与验收结论（评审 Agent）分离，汇总为 `completed` / `rejected` |
+| 工作区落盘 | 每个 run 独立 `data/workspaces/<run_id>/`，代码与产出可打开、可追溯 |
+| 文件工具 | `file_list` / `file_read` / `file_write`，Agent 按权限调用，交接只给清单 |
+| Self-Loop | 验收驳回后自动追加「修复 + 复评」任务，最多 N 轮，超限转人工 |
 | 运行记录 | 内存存储任务状态、耗时、token 与输出，支持运行详情查询 |
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 46 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机与队长拆解 |
+| 单元测试 | 62 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区与 Self-Loop |
 
 ## 模块 1：Agent 定义与配置
 
@@ -139,9 +145,10 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 ### 顺序执行
 
 - 按拓扑序逐个执行，同一时刻只有一个任务在跑，同层任务也不会并行
-- 上游任务的输出自动拼进下游 `context`（单条上限 30000 字、总量 80000 字，超出会标注截断）
+- 代码与产出落盘到运行工作区，下游 `context` 只有工作区清单（文件名 + 大小），不再贴全文
+- Agent 通过 `file_list` / `file_read` / `file_write` 工具按需读写文件
 - 任务失败：下游标记 `skipped`，无关任务继续执行；整个 run 最终为 `failed`
-- 每个任务记录状态、耗时、token 用量、模型与错误信息
+- 每个任务记录状态、耗时、token 用量、模型、产出文件与错误信息
 - `POST /api/v1/runs` 默认异步执行（返回 202 + run_id），加 `?wait=true` 则等执行完返回
 
 状态机：任务 `pending → running → completed / failed / skipped`；
@@ -184,8 +191,39 @@ cd AgentOrch\backend
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```
 
-已知限制：运行记录存在内存里，进程重启即丢失；上下文靠文本拼接传递，
-代码类产出可能被截断，最终要靠工具读写文件而不是拼 prompt；并发、重试、断点续跑留给下一阶段。
+已知限制：运行记录存在内存里，进程重启即丢失；并发、重试、断点续跑留给下一阶段。
+
+## 模块 3：验收与 Self-Loop
+
+### 执行 ≠ 验收
+
+一次 run 同时维护两个正交维度：
+
+| 字段 | 取值 | 谁负责 |
+| --- | --- | --- |
+| `execution_status` | `pending / running / completed / failed` | 调度器（有没有异常） |
+| `acceptance.status` | `pending / passed / rejected` | 评审 Agent（内容合不合格） |
+| `status` | `completed / rejected / failed / running` | 汇总 |
+
+评审输出里的「总体结论」被解析成验收结论：`通过` / `有条件通过` → `passed`，
+`驳回` → `rejected`。执行全部完成但评审驳回时，`status=rejected`、`execution_status=completed`，
+两个维度不会互相覆盖。
+
+### 验收驳回 → 自动修复
+
+`max_repair_rounds`（默认 2）控制 Self-Loop：
+
+1. 首轮执行结束后由评审 Agent 给出结论；
+2. 若驳回，追加 `R<n>-fix`（开发，读取评审记录和代码后修复）与 `R<n>-review`（复评）；
+3. 复评通过 → `status=completed`；仍驳回且轮次用尽 → `status=rejected` + `needs_human=true`。
+
+修复任务会先 `file_read` 读 `tasks/<评审任务>.md` 里的完整评审记录，再检查工作区代码，
+修复后用 `file_write` 写回完整文件——不再依赖 prompt 里的残缺代码片段。
+
+完整的可验证清单见 [docs/verification.md](docs/verification.md)（含「故意制造失败」的降级测试）。
+
+实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
+评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
 
 ## 目录结构
 
@@ -206,26 +244,32 @@ AgentOrch/
 │   │   ├── agents/
 │   │   │   ├── base.py          # BaseAgent / AgentSpec / AgentRunResult
 │   │   │   ├── tools.py         # 工具注册表与权限异常
+│   │   │   ├── tooling.py       # 文件工具的 function-calling 定义
 │   │   │   ├── registry.py      # 团队装配与配置校验
 │   │   │   ├── teams/software_team.json
 │   │   │   └── roles/           # 6 个角色类（prompt 都在这里）
 │   │   ├── orchestration/
-│   │   │   ├── models.py        # TaskSpec / TaskState / RunState
+│   │   │   ├── models.py        # TaskSpec / TaskState / RunState / AcceptanceState
 │   │   │   ├── planner.py       # 队长输出解析、任务校验
 │   │   │   ├── scheduler.py     # 依赖校验、拓扑排序、顺序执行
+│   │   │   ├── acceptance.py    # 评审结论解析（通过 / 驳回）
+│   │   │   ├── self_loop.py     # 驳回后追加修复与复评任务
+│   │   │   ├── workspace.py     # 运行工作区：落盘、清单、文件工具执行
 │   │   │   └── store.py         # 内存运行记录
 │   │   ├── core/                # config / errors / logging
-│   │   ├── llm/client.py        # DeepSeek 客户端封装（唯一接触 openai SDK 的地方）
+│   │   ├── llm/client.py        # DeepSeek 客户端封装（含 function calling 循环）
 │   │   └── web/index.html       # 零构建联调台
 │   ├── tests/                   # pytest
 │   ├── scripts/
 │   │   ├── smoke.py             # 端到端冒烟
 │   │   ├── run_agent.py         # 单 Agent 试跑 CLI
-│   │   └── run_pipeline.py      # 队长拆解 + 顺序执行 CLI
+│   │   └── run_pipeline.py      # 队长拆解 + 顺序执行 + Self-Loop CLI
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── run.py                   # python run.py
-├── docs/console.png             # 联调台截图
+├── docs/
+│   ├── console.png              # 联调台截图
+│   └── verification.md          # 验收与 Self-Loop 验证清单
 └── README.md
 ```
 
@@ -281,6 +325,10 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | POST | `/api/v1/runs` | 创建并执行（给 tasks 直接跑，只给 goal 先拆解） |
 | GET | `/api/v1/runs` | 最近运行列表（摘要，不含输出） |
 | GET | `/api/v1/runs/{run_id}` | 运行详情（含每个任务的输出与用量） |
+
+`POST /runs` 的 `max_repair_rounds` 控制验收驳回后的修复轮次（默认 2，0 表示不循环）。
+Run 响应里除了任务列表，还包含 `execution_status`、`acceptance`、`rounds`、
+`needs_human` 与 `workspace_dir`。
 
 ### 调用示例
 
@@ -360,15 +408,20 @@ cd AgentOrch\backend
   失败原因写进 `TaskState.error`，便于 Self-Loop 后续生成修复任务。
 - **拆解与执行解耦**：`/runs/plan` 只出计划，`/runs` 才执行；
   计划可以先人工看一眼，也可以直接 `plan_source=captain` 一路跑到底。
+- **执行与验收解耦**：调度器只对「有没有跑完」负责，评审 Agent 才对「合不合格」负责；
+  两个状态分开存，驳回时不会被 `completed` 掩盖。
+- **交接靠文件，不靠 prompt**：代码落盘、下游拿清单按需读取，
+  避免几万字的代码在上下文里被截断。
+- **工具调用双层兼容**：优先标准 `tool_calls`；上游网关偶尔把调用写成 DSML 文本时，
+  自动解析并执行，避免工具调用半途丢失。
 
 ## 下一步
 
-1. **工具化文件读写**：代码落盘、下游用 `file_read` 读文件，替代不可靠的 prompt 拼接
+1. **代码执行工具**：`python_exec` / `test_runner` 真正跑起来，让测试 Agent 能执行 pytest，而不只是写用例
 2. **并行调度**：无依赖任务并发执行（信号量限流），把「顺序」升级成「分层并行」
-3. **Self-Loop 控制器**：失败/驳回的任务自动生成修复任务并重跑，最大轮次与升级策略
-4. **结果验证**：结构化验收记录、双轨验证（自动化测试 + 评审 Agent）
-5. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
-6. **实时推送**：WebSocket 事件总线，前端监控面板接入
-7. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
+3. **结构化验收**：把评审表格解析成「每条 AC 的通过情况」，修复任务只带失败项
+4. **调度引擎升级**：`attempt_id` 原子认领、事件驱动派发、超时回收、SQLite 持久化
+5. **实时推送**：WebSocket 事件总线，前端监控面板接入
+6. **前端编排画布**：Vue 3 + AntV X6，拖拽生成任务清单
 
-> 详细设计见《AgentOrch_设计方案.docx》。
+> 详细设计见《AgentOrch_设计方案.docx》，验证步骤见 [docs/verification.md](docs/verification.md)。

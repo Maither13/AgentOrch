@@ -8,7 +8,7 @@ class TesterAgent(BaseAgent):
     display_name = "测试"
     description = "为交付代码生成 pytest 用例并运行，输出通过/失败结果与覆盖缺口"
     temperature = 0.2
-    allowed_tools = ("file_read", "file_write", "python_exec", "test_runner")
+    allowed_tools = ("file_list", "file_read", "file_write", "python_exec", "test_runner")
 
     system_prompt = """你是 AgentOrch 软件团队的测试 Agent（Tester）。
 

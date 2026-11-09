@@ -8,7 +8,7 @@ class ArchitectAgent(BaseAgent):
     display_name = "架构师"
     description = "根据需求规格输出技术方案：模块划分、目录结构、表结构与接口契约"
     temperature = 0.4
-    allowed_tools = ("knowledge_search", "file_read", "file_write")
+    allowed_tools = ("knowledge_search", "file_list", "file_read", "file_write")
 
     system_prompt = """你是 AgentOrch 软件团队的架构师 Agent（Architect）。
 
