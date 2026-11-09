@@ -105,6 +105,20 @@ def test_get_unknown_run(client):
     assert resp.json()["error"]["code"] == "run_not_found"
 
 
+def test_run_logs(client):
+    resp = client.post("/api/v1/runs?wait=true", json={"tasks": TASKS})
+    run_id = resp.json()["id"]
+
+    logs = client.get(f"/api/v1/runs/{run_id}/logs").json()
+    assert logs
+    assert any("任务" in entry["message"] for entry in logs)
+    assert any("运行结束" in entry["message"] for entry in logs)
+    assert logs[0]["level"] == "info"
+
+    detail = client.get(f"/api/v1/runs/{run_id}").json()
+    assert len(detail["logs"]) == len(logs)
+
+
 # --------------------------------------------------------------------------- #
 # 失败传播（用假 Agent 精确控制失败点）
 # --------------------------------------------------------------------------- #

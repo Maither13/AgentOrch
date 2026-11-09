@@ -45,5 +45,19 @@ FILE_TOOL_SCHEMAS: dict[str, dict] = {
 }
 
 
+TEST_TOOL_SCHEMAS: dict[str, dict] = {
+    "test_runner": {
+        "type": "function",
+        "function": {
+            "name": "test_runner",
+            "description": "在工作区根目录执行 python -m pytest -q，返回退出码与测试输出（含通过/失败统计）",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+}
+
+TOOL_SCHEMAS: dict[str, dict] = {**FILE_TOOL_SCHEMAS, **TEST_TOOL_SCHEMAS}
+
+
 def schemas_for(allowed_tools: Iterable[str]) -> list[dict]:
-    return [FILE_TOOL_SCHEMAS[name] for name in allowed_tools if name in FILE_TOOL_SCHEMAS]
+    return [TOOL_SCHEMAS[name] for name in allowed_tools if name in TOOL_SCHEMAS]

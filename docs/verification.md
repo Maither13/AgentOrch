@@ -96,7 +96,7 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 ## 5. 回归命令
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 70 个用例
+.\.venv\Scripts\python.exe -m pytest                 # 73 个用例
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --max-rounds 2
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```
@@ -165,5 +165,28 @@ needs_human = true
 ```
 
 这同时验证了「执行完成 ≠ 验收通过」和「轮次耗尽转人工」两条降级路径。
+
+## 8. 执行日志与测试执行
+
+### 执行日志
+
+每个 run 的 `logs` 会记录任务开始/完成/失败、并行层、Self-Loop 与验收结论：
+
+```powershell
+curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
+```
+
+单测 `tests/test_scheduler.py::test_run_logs` 断言日志存在且包含任务与运行结束记录。
+日志是内存列表（上限 200 条），和运行记录同生命周期。
+
+### 测试执行
+
+`test_runner` 在工作区根目录执行 `python -m pytest -q`，返回退出码与输出。
+单测 `tests/test_workspace.py::test_test_runner_passes` / `test_test_runner_failure`
+分别验证通过和失败两条路径；pytest 产生的缓存目录不会进入工作区清单。
+
+真实模型实测：测试 Agent 在 12 个用例的工作区里调用 `test_runner`，
+工作区生成 `.pytest_cache`，报告 `12 passed`。
+
 
 

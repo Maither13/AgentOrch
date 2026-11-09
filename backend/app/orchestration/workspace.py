@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +28,12 @@ CODE_BLOCK_RE = re.compile(
 
 MAX_FILE_CHARS = 200_000
 MAX_READ_CHARS = 40_000
+MAX_TEST_OUTPUT_CHARS = 12_000
+TEST_TIMEOUT_SECONDS = 180
+
+# 这些目录/文件不进清单，避免 __pycache__ 之类污染交接内容
+_IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", ".mypy_cache", ".ruff_cache"}
+_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +121,12 @@ class Workspace:
         return [
             self._file_info(path)
             for path in sorted(self.root.rglob("*"))
-            if path.is_file()
+            if path.is_file() and not self._ignored(path)
         ]
+
+    def _ignored(self, path: Path) -> bool:
+        relative = path.relative_to(self.root)
+        return any(part in _IGNORED_DIRS for part in relative.parts) or path.suffix in _IGNORED_SUFFIXES
 
     def manifest(self, *, max_entries: int = 40) -> str:
         files = self.list_files()
@@ -137,6 +149,32 @@ class Workspace:
         )
 
     # ---------------- 工具执行 ----------------
+    def run_tests(self, timeout: int = TEST_TIMEOUT_SECONDS) -> dict:
+        """在工作区根目录执行 pytest，返回退出码与输出摘要。"""
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q"],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"exit_code": -1, "output": f"测试超时（超过 {timeout}s）", "command": "python -m pytest -q"}
+        except OSError as exc:
+            return {"exit_code": -1, "output": f"无法启动 pytest：{exc}", "command": "python -m pytest -q"}
+
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if len(output) > MAX_TEST_OUTPUT_CHARS:
+            output = output[:MAX_TEST_OUTPUT_CHARS] + "\n…（输出过长，已截断）"
+        return {
+            "exit_code": completed.returncode,
+            "output": output.strip(),
+            "command": "python -m pytest -q",
+        }
+
     def execute(self, name: str, arguments: dict) -> dict:
         if name == "file_list":
             return {"files": [{"path": item.path, "size": item.size} for item in self.list_files()]}
@@ -148,4 +186,6 @@ class Workspace:
             content = str(arguments.get("content", ""))
             info = self.write_text(path, content)
             return {"path": info.path, "size": info.size}
+        if name == "test_runner":
+            return self.run_tests()
         raise AppError(f"未知工具：{name}", status_code=400, code="unknown_tool")

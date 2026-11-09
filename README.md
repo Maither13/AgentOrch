@@ -1,13 +1,12 @@
 # AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
-> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（任务调度器）** + **验收维度 / 落盘交接 / Self-Loop** + **固定工作流与分层并行** 已完成。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（工作流编排）** + **模块 3（任务调度与执行）** + **模块 4（结果验证与监控）** 已完成。
 
 第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 定义了 6 个固定角色、
-写死工具权限，并用一份 JSON 描述团队；模块 2 实现了
-「任务清单 → 依赖检查 → 拓扑排序 → 顺序执行」的调度闭环；
-之后把「执行状态」和「验收结论」拆成两个正交维度，代码改为落盘交接，
-并在验收驳回时自动进入修复循环；最后补上了固定工作流模板和层内并行执行。
+写死工具权限，并用一份 JSON 描述团队；模块 2 用 `WorkflowStep` + 固定模板把标准流程
+固化下来，按拓扑层并行执行；模块 3 负责任务状态机、内存任务列表、依赖派发与 Agent 调用；
+模块 4 提供执行日志、测试执行、评审验收，并在验收驳回时自动进入 Self-Loop。
 
 ![联调台](docs/console.png)
 
@@ -32,11 +31,13 @@
 | Self-Loop | 验收驳回后自动追加「修复 + 复评」任务，最多 N 轮，超限转人工 |
 | 固定工作流 | `WorkflowStep`（step_name + agent + depends_on）+ 软件工程模板 |
 | 分层并行 | 拓扑分层，层内 `asyncio.gather` 并发，信号量限流 |
+| 执行日志 | 每个 run 维护内存 `logs`，记录任务开始/完成/失败、并行层、Self-Loop、验收结论 |
+| 测试执行 | `test_runner` 工具在工作区真跑 `pytest`，返回退出码与输出 |
 | 运行记录 | 内存存储任务状态、耗时、token 与输出，支持运行详情查询 |
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 70 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop 与并行工作流 |
+| 单元测试 | 73 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -107,129 +108,7 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
 
 响应包含 `content`、`model`、`usage`、`latency_ms`、`allowed_tools`，便于后续调度与审计。
 
-## 模块 2：任务调度器
-
-调度链路支持两种入口：
-
-- **队长自动拆解**：`POST /runs {"goal": "..."}`，队长先产出任务 DAG，解析校验后直接顺序执行；
-- **手动任务清单**：`POST /runs {"tasks": [...]}`，跳过拆解，直接执行给定清单。
-
-拆解与执行之间可以插入人工确认：`POST /runs/plan` 只出计划不执行。
-
-```json
-{
-  "goal": "做一个学生成绩管理系统的后端 API",
-  "tasks": [
-    { "id": "T1", "title": "需求规格", "owner": "product_manager", "goal": "写需求文档" },
-    { "id": "T2", "title": "技术设计", "owner": "architect", "goal": "写设计文档", "depends_on": ["T1"] },
-    { "id": "T3", "title": "编码实现", "owner": "developer", "goal": "实现接口", "depends_on": ["T2"] }
-  ]
-}
-```
-
-### 队长拆解（goal → 任务清单）
-
-- 调用队长 Agent，要求输出「说明 + json 代码块形式的任务 DAG」；
-- [planner.py](backend/app/orchestration/planner.py) 从输出里提取 JSON，兼容围栏和非围栏两种写法；
-- 逐个任务按 `TaskSpec` 校验，再交给调度器做依赖检查与拓扑排序；
-- 解析失败返回 422（`plan_parse_failed`），不会创建空 run；
-- `plan_source` 字段标明这次是 `captain` 拆的还是 `manual` 传入的。
-
-### 依赖检查（执行前）
-
-- 任务 id 唯一、负责人必须在当前团队中
-- 依赖必须存在、不能依赖自己、不能重复声明
-- Kahn 拓扑排序检测环，有环直接 400（`task_cycle`）
-- 单次运行任务数上限 20
-
-`POST /api/v1/runs/validate` 只校验不执行，返回拓扑序，便于前端画图或人工确认。
-
-### 顺序执行
-
-- 按拓扑序逐个执行，同一时刻只有一个任务在跑，同层任务也不会并行
-- 代码与产出落盘到运行工作区，下游 `context` 只有工作区清单（文件名 + 大小），不再贴全文
-- Agent 通过 `file_list` / `file_read` / `file_write` 工具按需读写文件
-- 任务失败：下游标记 `skipped`，无关任务继续执行；整个 run 最终为 `failed`
-- 每个任务记录状态、耗时、token 用量、模型、产出文件与错误信息
-- `POST /api/v1/runs` 默认异步执行（返回 202 + run_id），加 `?wait=true` 则等执行完返回
-
-状态机：任务 `pending → running → completed / failed / skipped`；
-运行 `pending → running → completed / failed`。
-
-### 真实运行示例
-
-**手动清单**：3 个任务（产品经理 → 架构师 → 开发）顺序执行，22.2s、6945 tokens，
-架构师引用了上游的 AC1，开发沿用了架构师定的三张表。
-
-**队长自动拆解**：一句需求拆出 6 个任务（产品经理 → 架构师 → 开发 ×2 → 测试 → 评审），
-队长 4.6s 出计划，全链路 125s、约 39k tokens，6/6 执行完成。
-这次运行也暴露了一个真实问题：开发产出被上下文截断，测试和评审都据此判了「不完整」——
-**执行完成 ≠ 验收通过**，这正是下一步 Self-Loop 要接的口子。
-
-```powershell
-# 只拆解，不执行
-curl.exe -X POST http://127.0.0.1:8000/api/v1/runs/plan `
-  -H "Content-Type: application/json" `
-  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
-
-# 一句话需求直接跑完
-curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
-  -H "Content-Type: application/json" `
-  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
-```
-
-也可以直接用 CLI 看拆解结果和执行进度：
-
-```powershell
-cd AgentOrch\backend
-
-# 拆解 + 顺序执行
-.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "做一个学生成绩管理系统的后端 API"
-
-# 只看队长拆出什么，不执行
-.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --plan-only
-
-# 离线跑通全流程
-.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
-```
-
-已知限制：运行记录存在内存里，进程重启即丢失；并发、重试、断点续跑留给下一阶段。
-
-## 模块 3：验收与 Self-Loop
-
-### 执行 ≠ 验收
-
-一次 run 同时维护两个正交维度：
-
-| 字段 | 取值 | 谁负责 |
-| --- | --- | --- |
-| `execution_status` | `pending / running / completed / failed` | 调度器（有没有异常） |
-| `acceptance.status` | `pending / passed / rejected` | 评审 Agent（内容合不合格） |
-| `status` | `completed / rejected / failed / running` | 汇总 |
-
-评审输出里的「总体结论」被解析成验收结论：`通过` / `有条件通过` → `passed`，
-`驳回` → `rejected`。执行全部完成但评审驳回时，`status=rejected`、`execution_status=completed`，
-两个维度不会互相覆盖。
-
-### 验收驳回 → 自动修复
-
-`max_repair_rounds`（默认 2）控制 Self-Loop：
-
-1. 首轮执行结束后由评审 Agent 给出结论；
-2. 若驳回，追加 `R<n>-fix`（开发，读取评审记录和代码后修复）与 `R<n>-review`（复评）；
-3. 复评通过 → `status=completed`；仍驳回且轮次用尽 → `status=rejected` + `needs_human=true`。
-
-修复任务会先 `file_read` 读 `tasks/<评审任务>.md` 里的完整评审记录，再检查工作区代码，
-修复后用 `file_write` 写回完整文件——不再依赖 prompt 里的残缺代码片段。
-
-完整的可验证清单见 [docs/verification.md](docs/verification.md)（含「故意制造失败」的降级测试）。
-
-实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
-评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
-另外用一个「首轮故意缺测试」的 2 任务场景实测了 Self-Loop：评审驳回 → 自动追加
-`R1-fix` / `R1-review` → 补齐测试后复评通过，`rounds=1`。
-
-## 模块 4：固定工作流与分层并行
+## 模块 2：工作流编排
 
 ### 数据结构
 
@@ -286,6 +165,159 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/workflows/software_development/ru
 结束后才进入 S5，全链路 154s。评审最终驳回（缺 pytest 执行证据），
 `max_repair_rounds=0` → `status=rejected`、`execution_status=completed`、`needs_human=true`，
 正好验证了「执行完成但验收不通过」的降级路径。
+
+## 模块 3：任务调度与执行
+
+调度链路支持两种入口：
+
+- **队长自动拆解**：`POST /runs {"goal": "..."}`，队长先产出任务 DAG，解析校验后直接顺序执行；
+- **手动任务清单**：`POST /runs {"tasks": [...]}`，跳过拆解，直接执行给定清单。
+
+拆解与执行之间可以插入人工确认：`POST /runs/plan` 只出计划不执行。
+
+```json
+{
+  "goal": "做一个学生成绩管理系统的后端 API",
+  "tasks": [
+    { "id": "T1", "title": "需求规格", "owner": "product_manager", "goal": "写需求文档" },
+    { "id": "T2", "title": "技术设计", "owner": "architect", "goal": "写设计文档", "depends_on": ["T1"] },
+    { "id": "T3", "title": "编码实现", "owner": "developer", "goal": "实现接口", "depends_on": ["T2"] }
+  ]
+}
+```
+
+### 队长拆解（goal → 任务清单）
+
+- 调用队长 Agent，要求输出「说明 + json 代码块形式的任务 DAG」；
+- [planner.py](backend/app/orchestration/planner.py) 从输出里提取 JSON，兼容围栏和非围栏两种写法；
+- 逐个任务按 `TaskSpec` 校验，再交给调度器做依赖检查与拓扑排序；
+- 解析失败返回 422（`plan_parse_failed`），不会创建空 run；
+- `plan_source` 字段标明这次是 `captain` 拆的还是 `manual` 传入的。
+
+### 依赖检查（执行前）
+
+- 任务 id 唯一、负责人必须在当前团队中
+- 依赖必须存在、不能依赖自己、不能重复声明
+- Kahn 拓扑排序检测环，有环直接 400（`task_cycle`）
+- 单次运行任务数上限 20
+
+`POST /api/v1/runs/validate` 只校验不执行，返回拓扑序，便于前端画图或人工确认。
+
+### 任务列表与状态机
+
+- 任务列表存在 Python 内存里（`RunState.tasks` + `RunStore` 的 dict），不依赖 Redis；
+  进程重启即丢，属于明确取舍
+- 任务状态：`pending → running → completed` 三态为主，失败和上游未成功用 `failed / skipped`
+  补充，便于 Self-Loop 识别可修复任务
+- 依赖派发：每个任务只有在前序全部 `completed` 时才进入就绪集合；
+  任一前序 `failed / skipped`，该任务直接 `skipped`，无关任务继续执行
+- 每个 Agent 任务就是一次 `agent.run()`：system prompt + 任务描述 + 工作区清单，
+  内部调用一次 DeepSeek API（测试/评审可能多轮工具调用）
+
+### 顺序执行
+
+- 按拓扑序逐个执行，同一时刻只有一个任务在跑，同层任务也不会并行
+- 代码与产出落盘到运行工作区，下游 `context` 只有工作区清单（文件名 + 大小），不再贴全文
+- Agent 通过 `file_list` / `file_read` / `file_write` 工具按需读写文件
+- 任务失败：下游标记 `skipped`，无关任务继续执行；整个 run 最终为 `failed`
+- 每个任务记录状态、耗时、token 用量、模型、产出文件与错误信息
+- `POST /api/v1/runs` 默认异步执行（返回 202 + run_id），加 `?wait=true` 则等执行完返回
+
+状态机：任务 `pending → running → completed / failed / skipped`；
+运行 `pending → running → completed / rejected / failed`。
+
+### 真实运行示例
+
+**手动清单**：3 个任务（产品经理 → 架构师 → 开发）顺序执行，22.2s、6945 tokens，
+架构师引用了上游的 AC1，开发沿用了架构师定的三张表。
+
+**队长自动拆解**：一句需求拆出 6 个任务（产品经理 → 架构师 → 开发 ×2 → 测试 → 评审），
+队长 4.6s 出计划，全链路 125s、约 39k tokens，6/6 执行完成。
+这次运行也暴露了一个真实问题：开发产出被上下文截断，测试和评审都据此判了「不完整」——
+**执行完成 ≠ 验收通过**，这正是下一步 Self-Loop 要接的口子。
+
+```powershell
+# 只拆解，不执行
+curl.exe -X POST http://127.0.0.1:8000/api/v1/runs/plan `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
+
+# 一句话需求直接跑完
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"做一个学生成绩管理系统的后端 API\"}"
+```
+
+也可以直接用 CLI 看拆解结果和执行进度：
+
+```powershell
+cd AgentOrch\backend
+
+# 拆解 + 顺序执行
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "做一个学生成绩管理系统的后端 API"
+
+# 只看队长拆出什么，不执行
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --plan-only
+
+# 离线跑通全流程
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
+```
+
+已知限制：运行记录存在内存里，进程重启即丢失；并发、重试、断点续跑留给下一阶段。
+
+## 模块 4：结果验证与监控
+
+### 执行 ≠ 验收
+
+一次 run 同时维护两个正交维度：
+
+| 字段 | 取值 | 谁负责 |
+| --- | --- | --- |
+| `execution_status` | `pending / running / completed / failed` | 调度器（有没有异常） |
+| `acceptance.status` | `pending / passed / rejected` | 评审 Agent（内容合不合格） |
+| `status` | `completed / rejected / failed / running` | 汇总 |
+
+评审输出里的「总体结论」被解析成验收结论：`通过` / `有条件通过` → `passed`，
+`驳回` → `rejected`。执行全部完成但评审驳回时，`status=rejected`、`execution_status=completed`，
+两个维度不会互相覆盖。
+
+### 执行日志
+
+每个 run 在内存里维护 `logs`（`LogLevel` + 时间 + `task_id`），记录：
+运行开始、任务开始/完成/失败/跳过、并行层启动、Self-Loop 轮次、验收结论、运行结束。
+
+```powershell
+curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
+```
+
+上限 200 条，跟着运行记录一起存在内存里，进程重启即丢——和任务列表的存储策略一致，不引入 Redis。
+
+### 测试执行
+
+`test_runner` 工具在工作区根目录执行 `python -m pytest -q`（180s 超时），
+返回退出码与测试输出（截断到 12000 字符）。测试 Agent 和评审 Agent 有权限使用；
+`__pycache__`、`.pytest_cache` 会从工作区清单里过滤，不污染交接内容。
+
+实测：在一个 12 个用例的交付工作区里，测试 Agent 调用 `test_runner` 实际执行 pytest，
+工作区生成 `.pytest_cache`，报告 `12 passed`。
+
+### 验收驳回 → 自动修复
+
+`max_repair_rounds`（默认 2）控制 Self-Loop：
+
+1. 首轮执行结束后由评审 Agent 给出结论；
+2. 若驳回，追加 `R<n>-fix`（开发，读取评审记录和代码后修复）与 `R<n>-review`（复评）；
+3. 复评通过 → `status=completed`；仍驳回且轮次用尽 → `status=rejected` + `needs_human=true`。
+
+修复任务会先 `file_read` 读 `tasks/<评审任务>.md` 里的完整评审记录，再检查工作区代码，
+修复后用 `file_write` 写回完整文件——不再依赖 prompt 里的残缺代码片段。
+
+完整的可验证清单见 [docs/verification.md](docs/verification.md)（含「故意制造失败」的降级测试）。
+
+实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
+评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
+另外用一个「首轮故意缺测试」的 2 任务场景实测了 Self-Loop：评审驳回 → 自动追加
+`R1-fix` / `R1-review` → 补齐测试后复评通过，`rounds=1`。
 
 ## 目录结构
 
@@ -389,6 +421,7 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | POST | `/api/v1/runs` | 创建并执行（给 tasks 直接跑，只给 goal 先拆解） |
 | GET | `/api/v1/runs` | 最近运行列表（摘要，不含输出） |
 | GET | `/api/v1/runs/{run_id}` | 运行详情（含每个任务的输出与用量） |
+| GET | `/api/v1/runs/{run_id}/logs` | 运行执行日志（内存） |
 | GET | `/api/v1/workflows` | 内置工作流模板（含拓扑分层） |
 | GET | `/api/v1/workflows/{workflow_id}` | 模板详情 |
 | POST | `/api/v1/workflows/{workflow_id}/runs` | 按模板发起运行（分层并行） |

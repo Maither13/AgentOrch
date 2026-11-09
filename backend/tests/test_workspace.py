@@ -61,3 +61,26 @@ def test_read_missing_file(tmp_path):
     with pytest.raises(AppError) as exc:
         workspace.read_text("nope.py")
     assert exc.value.code == "file_not_found"
+
+
+def test_test_runner_passes(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_text("tests/test_ok.py", "def test_ok():\n    assert 1 + 1 == 2\n")
+
+    result = workspace.run_tests()
+
+    assert result["exit_code"] == 0
+    assert "passed" in result["output"]
+    # pytest 生成的缓存不进入清单
+    assert all("__pycache__" not in item.path for item in workspace.list_files())
+    assert all(".pytest_cache" not in item.path for item in workspace.list_files())
+
+
+def test_test_runner_failure(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_text("tests/test_bad.py", "def test_bad():\n    assert 1 == 2\n")
+
+    result = workspace.run_tests()
+
+    assert result["exit_code"] != 0
+    assert "failed" in result["output"].lower()

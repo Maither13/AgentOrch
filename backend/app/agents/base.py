@@ -130,7 +130,8 @@ class BaseAgent:
         tools = schemas_for(self.allowed_tools) if workspace is not None else []
         system_prompt = self.system_prompt
         if tools:
-            system_prompt += self.WORKSPACE_NOTE
+            tool_names = "、".join(schema["function"]["name"] for schema in tools)
+            system_prompt += self.WORKSPACE_NOTE.format(tools=tool_names)
             if "file_write" not in self.allowed_tools:
                 system_prompt += self.READONLY_WORKSPACE_NOTE
         messages = [
@@ -176,9 +177,10 @@ class BaseAgent:
     WORKSPACE_NOTE = """
 ## 工作区
 本次任务的所有代码与产出都在运行工作区中，文件内容不会直接贴在对话里。
-可用工具：file_list（列目录）、file_read（读文件）、file_write（写文件）。
+可用工具：{tools}。
 先 file_list 看清现状，再按需 file_read；写完代码必须 file_write 落盘。不要臆造文件内容。
-做完必要的读写后就给出最终答复，不要为了凑信息反复调用工具。
+测试 Agent 用 test_runner 真正执行 pytest，把退出码和输出作为证据。
+做完必要的读写/测试后就给出最终答复，不要为了凑信息反复调用工具。
 """
 
     READONLY_WORKSPACE_NOTE = """

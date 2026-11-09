@@ -17,7 +17,7 @@ from app.api.schemas import (
     UsageOut,
     ValidateResponse,
 )
-from app.orchestration.models import RunState, RunStatus, TaskState, TaskStatus
+from app.orchestration.models import LogEntry, RunState, RunStatus, TaskState, TaskStatus
 from app.orchestration.planner import plan_tasks
 from app.orchestration.scheduler import execute_run, validate_task_list
 from app.orchestration.store import RunStore
@@ -125,3 +125,8 @@ async def list_runs(
 @router.get("/runs/{run_id}", response_model=RunState, summary="运行详情（含每个任务的输出）")
 async def get_run(run_id: str, store: RunStore = Depends(get_run_store)) -> RunState:
     return store.get(run_id)
+
+
+@router.get("/runs/{run_id}/logs", response_model=list[LogEntry], summary="运行执行日志")
+async def get_run_logs(run_id: str, store: RunStore = Depends(get_run_store)) -> list[LogEntry]:
+    return store.get(run_id).logs

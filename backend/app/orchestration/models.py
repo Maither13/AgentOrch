@@ -60,6 +60,21 @@ class AcceptanceState(BaseModel):
     reviewed_at: datetime | None = None
 
 
+class LogLevel(StrEnum):
+    info = "info"
+    warning = "warning"
+    error = "error"
+
+
+class LogEntry(BaseModel):
+    """一条执行日志，存在内存里，跟着 RunState 一起返回。"""
+
+    at: datetime = Field(default_factory=utcnow)
+    level: LogLevel = LogLevel.info
+    message: str
+    task_id: str | None = None
+
+
 class TaskSpec(BaseModel):
     """任务清单里的一条任务，也是调度器的输入。"""
 
@@ -109,11 +124,23 @@ class RunState(BaseModel):
     rounds: int = 0
     needs_human: bool = False
     workspace_dir: str | None = None
+    logs: list[LogEntry] = Field(default_factory=list)
     tasks: list[TaskState]
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
+
+    def log(
+        self,
+        message: str,
+        *,
+        level: LogLevel = LogLevel.info,
+        task_id: str | None = None,
+    ) -> None:
+        self.logs.append(LogEntry(level=level, message=message, task_id=task_id))
+        if len(self.logs) > 200:  # 内存版日志，防止无限增长
+            del self.logs[:-200]
 
     def count(self, status: TaskStatus) -> int:
         return sum(1 for task in self.tasks if task.status is status)
