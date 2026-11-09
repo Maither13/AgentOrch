@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.agents.registry import load_team
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import AppError
@@ -33,10 +34,13 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     setup_logging(settings)
     app.state.llm = DeepSeekClient(settings)
+    app.state.team = load_team(app.state.llm, settings.default_team)
     logger.info(
-        "AgentOrch 启动 | env=%s | mode=%s | docs=http://%s:%s/docs",
+        "AgentOrch 启动 | env=%s | mode=%s | 团队=%s(%d 人) | docs=http://%s:%s/docs",
         settings.environment,
         app.state.llm.mode,
+        app.state.team.name,
+        len(app.state.team.members),
         settings.host,
         settings.port,
     )

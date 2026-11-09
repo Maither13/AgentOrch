@@ -1,0 +1,14 @@
+{
+  "id": "software_team",
+  "name": "软件需求工程 AI 团队",
+  "description": "面向软件需求工程场景的队长制团队：从一句自然语言需求，到需求分析、架构设计、编码、测试与评审验收的完整闭环。",
+  "captain": "captain",
+  "members": [
+    { "id": "captain", "role": "captain" },
+    { "id": "product_manager", "role": "product_manager" },
+    { "id": "architect", "role": "architect" },
+    { "id": "developer", "role": "developer" },
+    { "id": "tester", "role": "tester" },
+    { "id": "reviewer", "role": "reviewer" }
+  ]
+}

@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     # 逗号分隔，预留给后续 Vue 前端开发服务器
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # 启动时装配的团队配置（app/agents/teams/<id>.json）
+    default_team: str = "software_team"
 
     # ---------- 大模型 ----------
     deepseek_api_key: str = ""

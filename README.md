@@ -1,9 +1,11 @@
 # AgentOrch · 多智能体编排调度平台
 
-> 赛题一「Agent 编排创新应用」参赛项目。当前处于 **Sprint 0：骨架 + 大模型链路打通**。
+> 赛题一「Agent 编排创新应用」参赛项目。
+> 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** 已完成。
 
-本阶段目标很小但很关键：把 **FastAPI 后端分层骨架** 与 **DeepSeek API 调用链路** 先跑通，
-为后续的 Agent 团队、DAG 工作流、调度引擎、Self-Loop 提供稳定的底座。
+第一阶段把 FastAPI 分层骨架与 DeepSeek 调用链路跑通；模块 1 在此之上定义了
+6 个固定角色、写死工具权限，并用一份 JSON 描述团队。这两层是后续 DAG 工作流、
+调度引擎与 Self-Loop 的底座。
 
 ![联调台](docs/console.png)
 
@@ -13,13 +15,85 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| FastAPI 分层骨架 | `api / core / llm / web` 四层，配置、日志、异常统一出口 |
+| FastAPI 分层骨架 | `api / core / llm / agents / web`，配置、日志、异常统一出口 |
 | DeepSeek 客户端 | 基于 OpenAI 兼容协议封装：普通调用、SSE 流式、JSON 模式、推理模型 |
 | 错误归一化 | 鉴权失败、限流、超时、网络不可达、上游 5xx 全部映射为业务错误码 |
-| 连通性探测 | `POST /api/v1/llm/ping` 发一次最小真实请求，返回回复、延迟与 token 用量 |
+| 6 个内置 Agent | 队长 / 产品经理 / 架构师 / 开发 / 测试 / 评审，各自独立 system prompt |
+| 工具权限 | 每个角色写死 `allowed_tools`，import 时校验，越权抛 403 |
+| 团队配置 | `teams/software_team.json`：定义队长与成员映射，启动时装配并校验 |
+| 单 Agent 试跑 | `POST /agents/{id}/run` 与 CLI，验证「prompt + 调 API」链路 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | pytest 覆盖健康检查、模型列表、普通对话、流式对话、参数校验 |
+| 单元测试 | 27 个用例，覆盖链路、角色、团队配置校验与工具权限 |
+
+## 模块 1：Agent 定义与配置
+
+### 6 个内置角色
+
+角色是**固定写死**的 6 个类，不做动态注册；每个类的核心就是一段 system prompt。
+
+| Agent id | 角色 | 职责 | 工具权限 |
+| --- | --- | --- | --- |
+| `captain` | 队长 | 拆解任务 DAG、按依赖调度、汇总验收 | `task_plan` `task_dispatch` `knowledge_search` |
+| `product_manager` | 产品经理 | 需求规格、接口定义、数据字段、验收标准 | `knowledge_search` `web_search` `file_write` |
+| `architect` | 架构师 | 技术方案、模块划分、表结构、接口契约 | `knowledge_search` `file_read` `file_write` |
+| `developer` | 开发 | 按设计编码，按失败日志修复 | `file_read` `file_write` `python_exec` `shell_exec` |
+| `tester` | 测试 | 生成并运行 pytest，输出测试报告 | `file_read` `file_write` `python_exec` `test_runner` |
+| `reviewer` | 评审 | 独立验收、证据化结论、安全检查 | `file_read` `knowledge_search` `test_runner` |
+
+队长不持有任何代码执行工具（`shell_exec` / `python_exec`），与执行成员完全隔离；
+评审不持有写权限，只能读代码、跑测试、给结论。
+
+### 团队 JSON
+
+团队配置只决定「队长是谁、有哪些成员」，不承载 prompt：
+
+```json
+{
+  "id": "software_team",
+  "name": "软件需求工程 AI 团队",
+  "captain": "captain",
+  "members": [
+    { "id": "captain", "role": "captain" },
+    { "id": "product_manager", "role": "product_manager" },
+    { "id": "architect", "role": "architect" },
+    { "id": "developer", "role": "developer" },
+    { "id": "tester", "role": "tester" },
+    { "id": "reviewer", "role": "reviewer" }
+  ]
+}
+```
+
+启动时装配并校验：成员 id 唯一、角色必须存在、队长必须在成员列表里且角色为 `captain`，
+配置错误直接启动失败，避免带病运行。成员支持可选 `name` 覆盖显示名。
+
+### 单独试跑一个 Agent
+
+```powershell
+cd AgentOrch\backend
+
+# 查看团队成员与工具权限
+.\.venv\Scripts\python.exe scripts\run_agent.py --list
+
+# 队长拆解任务
+.\.venv\Scripts\python.exe scripts\run_agent.py --agent captain --task "做一个学生成绩管理系统的后端 API"
+
+# 架构师基于需求文档做设计
+.\.venv\Scripts\python.exe scripts\run_agent.py --agent architect --task "设计表结构与接口" --context "需求文档内容……"
+
+# 无 Key 时加 --mock
+.\.venv\Scripts\python.exe scripts\run_agent.py --agent captain --task "演示" --mock
+```
+
+也可以走 HTTP：
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/v1/agents/captain/run `
+  -H "Content-Type: application/json" `
+  -d "{\"task\":\"做一个学生成绩管理系统的后端 API\"}"
+```
+
+响应包含 `content`、`model`、`usage`、`latency_ms`、`allowed_tools`，便于后续调度与审计。
 
 ## 目录结构
 
@@ -29,22 +103,26 @@ AgentOrch/
 │   ├── app/
 │   │   ├── main.py              # 应用入口：lifespan、中间件、异常处理、静态页
 │   │   ├── api/
-│   │   │   ├── deps.py          # 依赖注入（共享 LLM 客户端）
+│   │   │   ├── deps.py          # 依赖注入（LLM 客户端、团队）
 │   │   │   ├── schemas.py       # Pydantic 请求/响应模型
 │   │   │   └── v1/
-│   │   │       ├── router.py    # 路由聚合，后续挂 agents/workflows/tasks
+│   │   │       ├── router.py    # 路由聚合，后续挂 workflows/tasks/runs
 │   │   │       ├── system.py    # 健康检查、模型列表、LLM ping
-│   │   │       └── chat.py      # 普通对话 + SSE 流式对话
-│   │   ├── core/
-│   │   │   ├── config.py        # pydantic-settings 配置
-│   │   │   ├── errors.py        # 领域异常（LLMError 等）
-│   │   │   └── logging.py       # 日志初始化
-│   │   ├── llm/
-│   │   │   └── client.py        # DeepSeek 客户端封装（唯一接触 openai SDK 的地方）
-│   │   └── web/
-│   │       └── index.html       # 零构建联调台
+│   │   │       ├── chat.py      # 普通对话 + SSE 流式对话
+│   │   │       └── agents.py    # 角色、工具、团队、单 Agent 试跑
+│   │   ├── agents/
+│   │   │   ├── base.py          # BaseAgent / AgentSpec / AgentRunResult
+│   │   │   ├── tools.py         # 工具注册表与权限异常
+│   │   │   ├── registry.py      # 团队装配与配置校验
+│   │   │   ├── teams/software_team.json
+│   │   │   └── roles/           # 6 个角色类（prompt 都在这里）
+│   │   ├── core/                # config / errors / logging
+│   │   ├── llm/client.py        # DeepSeek 客户端封装（唯一接触 openai SDK 的地方）
+│   │   └── web/index.html       # 零构建联调台
 │   ├── tests/                   # pytest
-│   ├── scripts/smoke.py         # 端到端冒烟测试
+│   ├── scripts/
+│   │   ├── smoke.py             # 端到端冒烟
+│   │   └── run_agent.py         # 单 Agent 试跑 CLI
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── run.py                   # python run.py
@@ -74,7 +152,7 @@ python run.py
 
 - 联调台：<http://127.0.0.1:8000/>
 - 接口文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/api/v1/health>
+- 团队配置：<http://127.0.0.1:8000/api/v1/team>
 
 ### 无 Key 也能跑
 
@@ -94,6 +172,11 @@ Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀）
 | POST | `/api/v1/llm/ping` | 真实调用一次模型，验证连通性 |
 | POST | `/api/v1/chat` | 对话，一次性返回 |
 | POST | `/api/v1/chat/stream` | 对话，SSE 流式返回 |
+| GET | `/api/v1/agents/roles` | 6 个内置角色及工具权限 |
+| GET | `/api/v1/agents/tools` | 全部工具及说明 |
+| GET | `/api/v1/team` | 当前团队配置与成员详情（含 prompt） |
+| GET | `/api/v1/agents/{agent_id}` | 单个 Agent 配置 |
+| POST | `/api/v1/agents/{agent_id}/run` | 试跑单个 Agent |
 
 ### 调用示例
 
@@ -134,6 +217,7 @@ data: {"type":"done","finish_reason":"stop","latency_ms":1234,"usage":{...},"mod
 | `LLM_TIMEOUT` | `120` | 单次请求超时（秒） |
 | `LLM_MAX_RETRIES` | `2` | SDK 层重试次数 |
 | `LLM_MOCK` | `false` | 本地模拟开关 |
+| `DEFAULT_TEAM` | `software_team` | 启动时装配的团队配置 id |
 | `ENVIRONMENT` | `dev` | `dev` 时 uvicorn 开启热重载 |
 | `PORT` | `8000` | 监听端口 |
 
@@ -158,19 +242,22 @@ cd AgentOrch\backend
 
 - **LLM 客户端与业务解耦**：Agent、工作流只依赖 `DeepSeekClient` 的数据结构
   （`ChatResult` / `StreamChunk` / `Usage`），将来接多模型路由只改一个文件。
-- **错误先归一化再抛给 API**：`openai` 的异常类型不外泄，前端拿到的是稳定的
+- **Prompt 就是配置**：每个角色一个类，prompt 作为类属性；改 prompt 只改一个文件，
+  可 diff、可 review，不散落在数据库或 JSON 里。
+- **权限在 import 阶段校验**：`BaseAgent.__init_subclass__` 检查工具是否注册、
+  prompt 是否为空、温度是否合法；写错直接启动失败，不会带病运行。
+- **错误先归一化再抛给 API**：`openai` 的异常类型不外泄，前端拿到稳定的
   `{code, message}`，便于调度引擎按错误类型决定重试 / 降级。
 - **连接复用**：`AsyncOpenAI` 在 lifespan 中创建一次、全局共享，避免每请求建连。
 - **Mock 是一等公民**：没有 Key 也能演示完整链路，评审复现成本低。
 
-## 下一步（按设计方案推进）
+## 下一步
 
-1. **Agent 定义与管理**：`AgentSpec` 数据模型、注册表、版本管理、工具白名单
-2. **工作流编排**：`WorkflowStep` + DAG 校验、拓扑分层、`asyncio.gather` 并行执行
-3. **任务调度引擎**：三态状态机、`attempt_id` 原子认领、事件驱动派发、超时回收
-4. **Self-Loop 控制器**：执行 → 验证 → 修复循环，最大轮次与升级策略
-5. **结果验证**：结构化验收记录、双轨验证（自动化测试 + 评审 Agent）
-6. **实时推送**：WebSocket 事件总线，前端监控面板接入
-7. **持久化**：SQLite（任务、团队配置、日志），后续迁移 PostgreSQL
+1. **工作流编排**：`WorkflowStep` + DAG 校验、拓扑分层、`asyncio.gather` 并行执行
+2. **任务调度引擎**：三态状态机、`attempt_id` 原子认领、事件驱动派发、超时回收
+3. **Self-Loop 控制器**：执行 → 验证 → 修复循环，最大轮次与升级策略
+4. **结果验证**：结构化验收记录、双轨验证（自动化测试 + 评审 Agent）
+5. **实时推送**：WebSocket 事件总线，前端监控面板接入
+6. **持久化**：SQLite（任务、团队配置、日志），后续迁移 PostgreSQL
 
 > 详细设计见《AgentOrch_设计方案.docx》。

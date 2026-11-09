@@ -70,3 +70,59 @@ class HealthResponse(BaseModel):
     version: str
     environment: str
     llm: LLMStatus
+
+
+# --------------------------------------------------------------------------- #
+# Agent / 团队
+# --------------------------------------------------------------------------- #
+class ToolOut(BaseModel):
+    name: str
+    display_name: str
+    description: str
+
+
+class AgentSpecOut(BaseModel):
+    id: str
+    role: str
+    display_name: str
+    description: str
+    system_prompt: str
+    allowed_tools: list[ToolOut]
+    model: str | None = None
+    temperature: float
+
+
+class RoleOut(BaseModel):
+    role: str
+    display_name: str
+    description: str
+    allowed_tools: list[ToolOut]
+    temperature: float
+
+
+class TeamOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    captain: str
+    members: list[AgentSpecOut]
+    source: str
+
+
+class AgentRunRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=50_000)
+    context: str | None = Field(default=None, max_length=200_000)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=32_768)
+
+
+class AgentRunResponse(BaseModel):
+    agent_id: str
+    role: str
+    display_name: str
+    content: str
+    model: str
+    mode: str
+    usage: UsageOut
+    latency_ms: int
+    allowed_tools: list[str]
