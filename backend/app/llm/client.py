@@ -220,7 +220,11 @@ class DeepSeekClient:
         """带 function calling 的多轮对话：模型要求调工具时，执行后把结果喂回去。"""
         model = model or self.default_model
         if self._mode == "mock":
-            return await self._mock_chat(messages, model)
+            return await self._mock_chat(
+                messages,
+                model,
+                tool_calls=self._mock_tool_calls(messages),
+            )
 
         client = self._require_client()
         started = time.perf_counter()
@@ -462,12 +466,53 @@ class DeepSeekClient:
                 + "\n```"
             )
 
+        if "评审 Agent（Reviewer）" in system:
+            return (
+                "【MOCK 模式】验收完成（本地模拟）。\n\n"
+                "## 总体结论\n\n**通过**\n\n"
+                "模拟模式：所有验收标准视为通过，未调用真实模型。"
+            )
+
+        if "测试 Agent（Tester）" in system:
+            return "【MOCK 模式】测试完成：3 passed（本地模拟，未执行真实 pytest）。"
+
         return (
             "【MOCK 模式】这是本地模拟回复，未调用真实模型。\n\n"
             f"收到 {len(messages)} 条消息，最后一条用户输入：{last_user[:120]}"
         )
 
-    async def _mock_chat(self, messages: Sequence[Message], model: str) -> ChatResult:
+    @staticmethod
+    def _mock_tool_calls(messages: Sequence[Message]) -> list[dict]:
+        """按角色伪造 1~2 次工具调用，让离线演示也能看到工具留痕与测试结果。"""
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        test_call = {
+            "name": "test_runner",
+            "arguments": {},
+            "result": {
+                "exit_code": 0,
+                "output": "3 passed in 0.01s",
+                "command": "python -m pytest -q",
+            },
+        }
+        list_call = {
+            "name": "file_list",
+            "arguments": {},
+            "result": {"files": [{"path": "app/main.py", "size": 128}]},
+        }
+        if "测试 Agent（Tester）" in system:
+            return [test_call]
+        if "评审 Agent（Reviewer）" in system:
+            return [list_call, test_call]
+        if "开发 Agent（Developer）" in system:
+            return [list_call]
+        return []
+
+    async def _mock_chat(
+        self,
+        messages: Sequence[Message],
+        model: str,
+        tool_calls: list[dict] | None = None,
+    ) -> ChatResult:
         await asyncio.sleep(0.15)
         text = self._mock_reply(messages)
         return ChatResult(
@@ -478,6 +523,7 @@ class DeepSeekClient:
             mode="mock",
             usage=Usage(prompt_tokens=12, completion_tokens=len(text), total_tokens=12 + len(text)),
             finish_reason="stop",
+            tool_calls=tool_calls or [],
         )
 
     async def _mock_stream(self, messages: Sequence[Message], model: str) -> AsyncIterator[StreamChunk]:

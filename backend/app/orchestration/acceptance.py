@@ -41,17 +41,29 @@ def parse_review(text: str) -> tuple[AcceptanceStatus, str | None, str, list[str
 
     verdict = match.group(1)
     status = AcceptanceStatus.rejected if verdict == "驳回" else AcceptanceStatus.passed
-    return status, verdict, section, _extract_blockers(text)
+    blockers = _extract_blockers(text) if status is AcceptanceStatus.rejected else []
+    return status, verdict, section, blockers
 
 
 def _extract_blockers(text: str) -> list[str]:
+    """从「阻断项清单」里提取 P0 条目，过滤掉复现/修复这类续行与表格分隔线。"""
     index = text.find("阻断项")
     if index == -1:
         return []
+
     blockers: list[str] = []
-    for raw in text[index : index + 800].splitlines()[1:]:
-        line = raw.strip().lstrip("-*0123456789. 、")
+    for raw in text[index : index + 1_200].splitlines()[1:]:
+        line = raw.strip()
         if not line or line.startswith("#"):
+            continue
+        if set(line) <= set("|-: "):
+            continue
+        if line.startswith("|"):
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            line = next((cell for cell in cells if cell), "")
+        line = line.lstrip("-*0123456789. 、")
+        line = line.replace("**", "").strip()
+        if not line or line.startswith(("复现", "修复", "期望", "实际", "证据", "说明", "建议")):
             continue
         blockers.append(line[:160])
         if len(blockers) >= 5:
@@ -74,6 +86,11 @@ def evaluate_acceptance(run: RunState) -> AcceptanceState:
 
     latest = reviewers[-1]
     status, verdict, summary, blockers = parse_review(latest.output or "")
+    if status is AcceptanceStatus.pending:
+        # 有评审任务却没有「总体结论」：信息不足，绝不能算通过
+        status = AcceptanceStatus.needs_revision
+        summary = "评审未给出「总体结论」，无法判定验收结果。\n" + (summary or "")
+
     run.acceptance = AcceptanceState(
         status=status,
         verdict=verdict,

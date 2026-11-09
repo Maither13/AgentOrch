@@ -187,6 +187,34 @@ async def test_failing_test_triggers_repair_then_passes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_review_without_conclusion_needs_revision(tmp_path):
+    """评审存在但没给「总体结论」：必须转人工，绝不能算 completed。"""
+    team, _, _, _ = _team(["整体还行，暂时没发现问题。"])
+    run = _run()
+
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=3)
+
+    assert run.status == RunStatus.needs_revision
+    assert run.acceptance.status is AcceptanceStatus.needs_revision
+    assert run.needs_human is True
+    assert run.rounds == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_are_traced(tmp_path):
+    team, _, _, _ = _team([PASS], tester=ScriptedTester([0]))
+    run = _run(with_tester=True)
+
+    await execute_run(run, team, workspace=Workspace(tmp_path), max_rounds=0)
+
+    tester_state = next(state for state in run.tasks if state.spec.owner == "tester")
+    assert tester_state.test_result is not None
+    assert tester_state.test_result.exit_code == 0
+    assert [call.name for call in tester_state.tool_calls] == ["test_runner"]
+    assert tester_state.tool_calls[0].ok is True
+
+
+@pytest.mark.asyncio
 async def test_without_reviewer_acceptance_pending(tmp_path):
     team, _, _, _ = _team([REJECT])
     tasks = [TaskSpec(id="T1", title="实现", goal="写代码", owner="developer")]

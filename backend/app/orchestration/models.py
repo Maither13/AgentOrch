@@ -1,7 +1,7 @@
 """任务与运行状态模型。
 
-这一版只支持顺序执行：任务按拓扑序一个一个跑，不并行、不重试、不持久化。
-状态字段预留了并行调度需要的结构（依赖、时间、用量），后续升级不用改表。
+支持顺序执行与分层并行、执行/验收双维度、测试门与 Self-Loop。
+任务列表与日志都在内存里，不依赖 Redis。
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ class RunStatus(StrEnum):
     failed = "failed"
     # 执行完成但评审验收未通过
     rejected = "rejected"
+    # 有评审任务，但没有解析出验收结论：不能算通过，转人工
+    needs_revision = "needs_revision"
 
 
 class ExecutionStatus(StrEnum):
@@ -47,6 +49,8 @@ class AcceptanceStatus(StrEnum):
     pending = "pending"
     passed = "passed"
     rejected = "rejected"
+    # 评审没给出「总体结论」，视为验收信息不足
+    needs_revision = "needs_revision"
 
 
 class AcceptanceState(BaseModel):
@@ -102,6 +106,15 @@ class TestResult(BaseModel):
     command: str = "python -m pytest -q"
 
 
+class ToolCallTrace(BaseModel):
+    """一次工具调用的留痕（参数与结果都做摘要，避免日志过大）。"""
+
+    name: str
+    arguments: str = ""
+    result: str = ""
+    ok: bool = True
+
+
 class TaskState(BaseModel):
     spec: TaskSpec
     status: TaskStatus = TaskStatus.pending
@@ -110,10 +123,12 @@ class TaskState(BaseModel):
     mode: str | None = None
     output: str | None = None
     error: str | None = None
-    # 本次任务新建或修改的工作区文件
+    # 本次任务新建或修改的交付文件（不含 tasks/ 留档）
     files: list[str] = Field(default_factory=list)
     # 测试类任务最后一次 pytest 结果（来自 test_runner 工具）
     test_result: TestResult | None = None
+    # 工具调用痕跡
+    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     started_at: datetime | None = None
     finished_at: datetime | None = None

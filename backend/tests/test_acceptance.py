@@ -40,3 +40,18 @@ def test_parse_empty():
     status, verdict, _, _ = parse_review("")
     assert status is AcceptanceStatus.pending
     assert verdict is None
+
+
+def test_blockers_ignore_continuation_lines():
+    text = (
+        "## 阻断项清单\n"
+        "1. P0-1 缺少异常处理\n"
+        "复现：GET /x 返回 500\n"
+        "修复：补充 try/except\n"
+        "2. P0-2 未提供测试证据\n"
+        "\n## 总体结论\n\n**驳回**\n"
+    )
+    _, _, _, blockers = parse_review(text)
+    assert any("P0-1" in item for item in blockers)
+    assert any("P0-2" in item for item in blockers)
+    assert all(not item.startswith(("复现", "修复")) for item in blockers)

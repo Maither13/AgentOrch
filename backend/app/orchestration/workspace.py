@@ -12,6 +12,7 @@ import hashlib
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,6 +150,58 @@ class Workspace:
         )
 
     # ---------------- 工具执行 ----------------
+    def run_python(self, code: str, timeout: int = 60) -> dict:
+        """在工作区里执行一段 Python 代码（独立进程、超时保护）。"""
+        if len(code) > 50_000:
+            raise AppError("代码过长", status_code=400, code="code_too_large")
+        script = self.root / f".agent_exec_{uuid.uuid4().hex[:8]}.py"
+        script.write_text(code, encoding="utf-8", newline="")
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"exit_code": -1, "output": f"执行超时（超过 {timeout}s）"}
+        finally:
+            script.unlink(missing_ok=True)
+
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if len(output) > MAX_TEST_OUTPUT_CHARS:
+            output = output[:MAX_TEST_OUTPUT_CHARS] + "\n…（输出过长，已截断）"
+        return {"exit_code": completed.returncode, "output": output.strip()}
+
+    def search(self, query: str, max_results: int = 5) -> dict:
+        """在工作区文本文件里做关键字检索（轻量知识库）。"""
+        query = (query or "").strip()
+        if not query:
+            raise AppError("检索关键字不能为空", status_code=400, code="empty_query")
+        needle = query.lower()
+        hits: list[dict] = []
+        for info in self.list_files():
+            try:
+                text = self.read_text(info.path, max_chars=20_000)
+            except AppError:
+                continue
+            index = text.lower().find(needle)
+            if index == -1:
+                continue
+            start = max(0, index - 80)
+            hits.append(
+                {
+                    "path": info.path,
+                    "snippet": text[start : index + len(query) + 160].replace("\n", " ")[:300],
+                }
+            )
+            if len(hits) >= max_results:
+                break
+        return {"query": query, "hits": hits}
+
     def run_tests(self, timeout: int = TEST_TIMEOUT_SECONDS) -> dict:
         """在工作区根目录执行 pytest，返回退出码与输出摘要。"""
         try:
@@ -188,4 +241,8 @@ class Workspace:
             return {"path": info.path, "size": info.size}
         if name == "test_runner":
             return self.run_tests()
+        if name == "python_exec":
+            return self.run_python(str(arguments.get("code", "")))
+        if name == "knowledge_search":
+            return self.search(str(arguments.get("query", "")))
         raise AppError(f"未知工具：{name}", status_code=400, code="unknown_tool")

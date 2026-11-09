@@ -1,4 +1,4 @@
-﻿# AgentOrch · 多智能体编排调度平台
+# AgentOrch · 多智能体编排调度平台
 
 > 赛题一「Agent 编排创新应用」参赛项目。
 > 当前进度：**Sprint 0（骨架 + 大模型链路）** + **模块 1（Agent 定义与配置）** + **模块 2（工作流编排）** + **模块 3（任务调度与执行）** + **模块 4（结果验证与监控）** + **模块 5（Self-Loop）** 已完成。
@@ -37,7 +37,7 @@
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 联调台页面 | `http://127.0.0.1:8000/`，可直接对话、流式输出、查看延迟与用量 |
-| 单元测试 | 75 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
+| 单元测试 | 81 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
 
 ## 模块 1：Agent 定义与配置
 
@@ -56,6 +56,11 @@
 
 队长不持有任何代码执行工具（`shell_exec` / `python_exec`），与执行成员完全隔离；
 评审不持有写权限，只能读代码、跑测试、给结论。
+
+工具注册表里有 10 个名字，但只有 6 个真正实现并暴露给模型：`file_list` / `file_read` /
+`file_write` / `test_runner` / `python_exec` / `knowledge_search`。
+`task_plan` / `task_dispatch` 属于编排层内部能力，`web_search` / `shell_exec` 尚未开放——
+这四个在 `/api/v1/agents/tools` 里明确标 `implemented=false`，不会伪装成可用工具。
 
 ### 团队 JSON
 
@@ -274,12 +279,16 @@ cd AgentOrch\backend
 | 字段 | 取值 | 谁负责 |
 | --- | --- | --- |
 | `execution_status` | `pending / running / completed / failed` | 调度器（有没有异常） |
-| `acceptance.status` | `pending / passed / rejected` | 评审 Agent（内容合不合格） |
-| `status` | `completed / rejected / failed / running` | 汇总 |
+| `acceptance.status` | `pending / passed / rejected / needs_revision` | 评审 Agent（内容合不合格） |
+| `status` | `completed / rejected / needs_revision / failed / running` | 汇总 |
 
 评审输出里的「总体结论」被解析成验收结论：`通过` / `有条件通过` → `passed`，
 `驳回` → `rejected`。执行全部完成但评审驳回时，`status=rejected`、`execution_status=completed`，
 两个维度不会互相覆盖。
+
+**验收缺失探针**：只要有评审任务、却没解析出「总体结论」，就判
+`acceptance.status=needs_revision`、`status=needs_revision`、`needs_human=true`，
+绝不放行成 `completed`。评审偶尔会漏写小标题，这一条是兜底。
 
 ### 执行日志
 
@@ -291,6 +300,9 @@ curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
 ```
 
 上限 200 条，跟着运行记录一起存在内存里，进程重启即丢——和任务列表的存储策略一致，不引入 Redis。
+
+每个任务还会留存 `tool_calls`：工具名、参数摘要、结果摘要、是否成功；`test_runner` 的退出码
+另外写进 `test_result`，避免「工具到底调没调」只能靠猜。
 
 ### 测试执行
 
@@ -313,6 +325,8 @@ curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
 1. **测试门**：测试 Agent 调用 `test_runner` 后 pytest 退出码非 0——即使评审给了「通过」，
    也强制判为 `rejected`；
 2. **评审驳回**：评审「总体结论」为 `驳回`。
+
+评审存在但没给结论（`needs_revision`）不进入循环——信息不足不是「可修复」的问题，直接转人工。
 
 ### 一轮循环做什么
 
@@ -341,8 +355,24 @@ R<n>-review（评审：重新验收）
 - [self_loop.py](backend/app/orchestration/self_loop.py)：生成修复/重测/复评任务
 - [scheduler.py](backend/app/orchestration/scheduler.py)：轮次控制与测试结果取证
 
-测试门、失败触发循环、轮次耗尽三条路径由 `tests/test_self_loop.py` 的 5 个用例确定性覆盖；
-此前已用真实模型验证过「驳回 → 修复 → 复评」闭环（`rounds=1`）。
+测试门、失败触发循环、轮次耗尽三条路径由 `tests/test_self_loop.py` 的 7 个用例确定性覆盖。
+
+**真机失败链路**（2026-11-09）：手动构造一个首轮必失败的场景——要求工作区同时存在
+`app/main.py`、`tests/test_health.py`、`docs/acceptance.md`，但开发者只被要求写
+`app/main.py`。评审首轮给出「驳回」（并因无测试用例导致 pytest 退出码 5），
+系统自动追加 `R1-fix` / `R1-test` / `R1-review`：
+
+```
+T1  开发   completed  → app/main.py
+T2  评审   completed  → 驳回（缺 tests/、docs/；pytest 退出码 5）
+Self-Loop 第 1 轮：追加 3 个任务（R1-fix, R1-test, R1-review）
+R1-fix  开发 completed → 补齐 tests/test_health.py、docs/acceptance.md
+R1-test 测试 completed → pytest 退出码 0
+R1-review 评审 completed → 总体结论：通过
+最终 status=completed, rounds=1, 84s
+```
+
+这条链路里的工具调用全部留痕（`file_read` / `file_write` / `test_runner` / `python_exec`）。
 
 ## 目录结构
 
@@ -426,6 +456,9 @@ python run.py
 ```
 
 Mock 模式下所有接口照常返回（内容带 `【MOCK 模式】` 前缀），便于单测和前端联调。
+Mock 不是一句空话：队长会返回可解析的任务 DAG，评审会返回带「总体结论：通过」的验收记录，
+测试会返回一次假的 `test_runner` 调用（退出码 0）——离线也能跑出完整的
+「拆解 → 执行 → 验收 → 工具留痕」链路。
 
 ## 接口一览
 

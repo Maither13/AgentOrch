@@ -1,4 +1,8 @@
-"""文件类工具的 function-calling 定义（与 TOOL_REGISTRY 中的名字对应）。"""
+"""工具的 function-calling 定义。
+
+只有 TOOL_REGISTRY 里 implemented=True 的工具会出现在这里；
+占位工具（task_plan / task_dispatch / web_search / shell_exec）不在暴露范围内。
+"""
 
 from __future__ import annotations
 
@@ -44,8 +48,7 @@ FILE_TOOL_SCHEMAS: dict[str, dict] = {
     },
 }
 
-
-TEST_TOOL_SCHEMAS: dict[str, dict] = {
+EXEC_TOOL_SCHEMAS: dict[str, dict] = {
     "test_runner": {
         "type": "function",
         "function": {
@@ -54,9 +57,35 @@ TEST_TOOL_SCHEMAS: dict[str, dict] = {
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    "python_exec": {
+        "type": "function",
+        "function": {
+            "name": "python_exec",
+            "description": "在工作区里执行一段 Python 代码（独立进程，60s 超时），返回退出码与输出",
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": "要执行的完整 Python 代码"}},
+                "required": ["code"],
+            },
+        },
+    },
+    "knowledge_search": {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": "在工作区文件里做关键字检索，返回命中的文件路径与片段",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索关键字"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 }
 
-TOOL_SCHEMAS: dict[str, dict] = {**FILE_TOOL_SCHEMAS, **TEST_TOOL_SCHEMAS}
+TOOL_SCHEMAS: dict[str, dict] = {**FILE_TOOL_SCHEMAS, **EXEC_TOOL_SCHEMAS}
 
 
 def schemas_for(allowed_tools: Iterable[str]) -> list[dict]:

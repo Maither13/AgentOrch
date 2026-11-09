@@ -113,7 +113,7 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 ## 5. 回归命令
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 75 个用例
+.\.venv\Scripts\python.exe -m pytest                 # 81 个用例
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --max-rounds 2
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```
@@ -211,6 +211,49 @@ curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
 
 真实模型实测：测试 Agent 在 12 个用例的工作区里调用 `test_runner`，
 工作区生成 `.pytest_cache`，报告 `12 passed`。
+
+## 9. 验收缺失探针
+
+有评审任务、但没有解析出「总体结论」时：
+
+```
+acceptance.status = needs_revision
+status = needs_revision
+needs_human = true
+```
+
+不会进入 Self-Loop，也绝不会算 `completed`。单测：
+`tests/test_self_loop.py::test_review_without_conclusion_needs_revision`。
+
+没有评审任务的 run 仍然保持 `acceptance=pending`、`status=completed`（执行完成，未要求验收）。
+
+## 10. 真机失败链路（必做验收）
+
+手动构造首轮必失败场景：T1 开发只写 `app/main.py`；T2 评审要求同时存在
+`app/main.py`、`tests/test_health.py`、`docs/acceptance.md`，缺一即驳回。
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"goal\":\"真机制造失败\",\"max_repair_rounds\":2,\"tasks\":[...]}"
+```
+
+实测结果（84s）：
+
+```
+T1         completed  → app/main.py
+T2         completed  → 总体结论：驳回；test_runner 退出码 5（没有测试可收集）
+Self-Loop 第 1 轮：追加 3 个任务（R1-fix, R1-test, R1-review）
+R1-fix     completed  → 补齐 tests/test_health.py、docs/acceptance.md
+R1-test    completed  → test_runner 退出码 0
+R1-review  completed  → 总体结论：通过
+最终：status=completed, rounds=1, needs_human=false
+```
+
+工具留痕示例：T1 调用了 `file_list` / `file_write` / `python_exec`；
+T2 调用了 `file_list` / `file_read` / `test_runner`；R1-test 调用了
+`file_read` / `test_runner` / `python_exec`。
+
 
 
 

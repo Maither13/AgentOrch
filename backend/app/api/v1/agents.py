@@ -23,7 +23,12 @@ router = APIRouter(tags=["agents"])
 
 def _tool_out(name: str) -> ToolOut:
     spec = TOOL_REGISTRY[name]
-    return ToolOut(name=spec.name, display_name=spec.display_name, description=spec.description)
+    return ToolOut(
+        name=spec.name,
+        display_name=spec.display_name,
+        description=spec.description,
+        implemented=spec.implemented,
+    )
 
 
 def _agent_out(agent: BaseAgent) -> AgentSpecOut:

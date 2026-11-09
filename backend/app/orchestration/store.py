@@ -44,6 +44,11 @@ class RunStore:
         if len(self._runs) < self._max_runs:
             return
         for run_id, run in list(self._runs.items()):
-            if run.status in {RunStatus.completed, RunStatus.failed}:
+            if run.status in {
+                RunStatus.completed,
+                RunStatus.failed,
+                RunStatus.rejected,
+                RunStatus.needs_revision,
+            }:
                 self._runs.pop(run_id, None)
                 return

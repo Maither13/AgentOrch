@@ -84,3 +84,21 @@ def test_test_runner_failure(tmp_path):
 
     assert result["exit_code"] != 0
     assert "failed" in result["output"].lower()
+
+
+def test_python_exec(tmp_path):
+    workspace = Workspace(tmp_path)
+    result = workspace.run_python("print(6 * 7)")
+    assert result["exit_code"] == 0
+    assert "42" in result["output"]
+
+
+def test_knowledge_search(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_text("docs/spec.md", "FastAPI 健康检查接口，返回 status=ok")
+
+    result = workspace.search("健康检查")
+
+    assert result["query"] == "健康检查"
+    assert result["hits"][0]["path"] == "docs/spec.md"
+    assert "健康检查" in result["hits"][0]["snippet"]

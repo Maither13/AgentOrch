@@ -32,8 +32,13 @@ def test_list_roles(client):
 
 
 def test_list_tools(client):
-    names = {tool["name"] for tool in client.get("/api/v1/agents/tools").json()}
+    tools = client.get("/api/v1/agents/tools").json()
+    names = {tool["name"] for tool in tools}
     assert {"task_plan", "file_write", "python_exec", "test_runner"} <= names
+    by_name = {tool["name"]: tool for tool in tools}
+    assert by_name["file_read"]["implemented"] is True
+    assert by_name["python_exec"]["implemented"] is True
+    assert by_name["shell_exec"]["implemented"] is False
 
 
 def test_agent_detail(client):

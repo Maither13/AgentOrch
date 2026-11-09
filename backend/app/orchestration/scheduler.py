@@ -10,13 +10,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import defaultdict
 
 from app.agents.registry import Team
 from app.core.errors import AppError
-from app.orchestration.acceptance import apply_test_gate, evaluate_acceptance
+from app.orchestration.acceptance import apply_test_gate, evaluate_acceptance, latest_test_result
 from app.orchestration.models import (
     AcceptanceStatus,
     ExecutionStatus,
@@ -28,6 +29,7 @@ from app.orchestration.models import (
     TaskStatus,
     TestResult,
     TokenUsage,
+    ToolCallTrace,
     utcnow,
 )
 from app.orchestration.self_loop import append_repair_tasks
@@ -36,6 +38,14 @@ from app.orchestration.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 MAX_TASKS = 20
+# 一轮修复会追加 3 个任务，整个 run 的任务数上限
+MAX_RUN_TASKS = 30
+_MAX_PREVIEW = 300
+
+
+def _preview(value: str) -> str:
+    value = value.strip()
+    return value if len(value) <= _MAX_PREVIEW else value[:_MAX_PREVIEW] + "…"
 
 
 # --------------------------------------------------------------------------- #
@@ -145,8 +155,15 @@ async def execute_run(
         apply_test_gate(run)
         run.log(f"验收结论：{run.acceptance.verdict or '未给出'}（{run.acceptance.status.value}）")
 
+        previous_signature = _progress_signature(run)
         round_no = 0
         while run.acceptance.status is AcceptanceStatus.rejected and round_no < max_rounds:
+            if len(run.tasks) + 3 > MAX_RUN_TASKS:
+                run.log(
+                    f"任务数达到上限 {MAX_RUN_TASKS}，停止继续修复",
+                    level=LogLevel.warning,
+                )
+                break
             round_no += 1
             appended = append_repair_tasks(run, round_no)
             run.rounds = round_no
@@ -166,12 +183,24 @@ async def execute_run(
             apply_test_gate(run)
             run.log(f"第 {round_no} 轮复评：{run.acceptance.verdict or '未给出'}（{run.acceptance.status.value}）")
 
+            signature = _progress_signature(run)
+            if signature == previous_signature:
+                run.log(
+                    f"第 {round_no} 轮后状态没有变化，判定无进展，提前终止",
+                    level=LogLevel.warning,
+                )
+                break
+            previous_signature = signature
+
         if run.acceptance.status is AcceptanceStatus.rejected:
             run.needs_human = True
             run.log("修复轮次用尽仍未通过，转人工介入", level=LogLevel.warning)
             logger.warning(
                 "Self-Loop 结束：%d 轮修复后仍未通过，需要人工介入", run.rounds
             )
+        elif run.acceptance.status is AcceptanceStatus.needs_revision:
+            run.needs_human = True
+            run.log("评审未给出结论，验收信息不足，转人工复核", level=LogLevel.warning)
     except Exception as exc:  # noqa: BLE001 —— 后台任务不能静默死掉
         logger.exception("调度器执行异常")
         run.error = f"调度器异常：{exc}"
@@ -186,6 +215,8 @@ async def execute_run(
             run.execution_status = ExecutionStatus.completed
             if run.acceptance.status is AcceptanceStatus.rejected:
                 run.status = RunStatus.rejected
+            elif run.acceptance.status is AcceptanceStatus.needs_revision:
+                run.status = RunStatus.needs_revision
             else:
                 run.status = RunStatus.completed
         run.log(f"运行结束：{run.status.value}（执行={run.execution_status.value}）")
@@ -332,17 +363,35 @@ async def _execute_task(
         if state.spec.owner == "developer":
             workspace.write_code_blocks(result.content)
         after = {item.path: item.sha256 for item in workspace.list_files()}
-        state.files = [path for path, digest in after.items() if before.get(path) != digest]
-        # 记录本轮 test_runner 的真实结果，供测试门和 Self-Loop 使用
+        # tasks/ 是系统留档，不算本次任务的交付文件
+        state.files = [
+            path for path, digest in after.items() if before.get(path) != digest and not path.startswith("tasks/")
+        ]
+        # 工具调用留痕 + 测试结果取证
         for call in result.tool_calls:
-            if call.get("name") != "test_runner" or not isinstance(call.get("result"), dict):
-                continue
-            raw = call["result"]
-            state.test_result = TestResult(
-                exit_code=int(raw.get("exit_code", -1)),
-                output=str(raw.get("output", "")),
-                command=str(raw.get("command", "python -m pytest -q")),
+            name = str(call.get("name", "unknown"))
+            arguments = call.get("arguments") or {}
+            raw_result = call.get("result")
+            arguments_text = (
+                json.dumps(arguments, ensure_ascii=False)
+                if isinstance(arguments, dict)
+                else str(arguments)
             )
+            result_text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result, ensure_ascii=False)
+            state.tool_calls.append(
+                ToolCallTrace(
+                    name=name,
+                    arguments=_preview(arguments_text),
+                    result=_preview(result_text),
+                    ok=not (isinstance(raw_result, dict) and "error" in raw_result),
+                )
+            )
+            if name == "test_runner" and isinstance(raw_result, dict):
+                state.test_result = TestResult(
+                    exit_code=int(raw_result.get("exit_code", -1)),
+                    output=str(raw_result.get("output", "")),
+                    command=str(raw_result.get("command", "python -m pytest -q")),
+                )
     finally:
         state.finished_at = utcnow()
         state.duration_ms = int((time.perf_counter() - started) * 1000)
@@ -375,3 +424,15 @@ def build_context(
                 f"→ tasks/{dep.spec.id}.md"
             )
     return "\n".join(parts)
+
+
+def _progress_signature(run: RunState) -> tuple:
+    """一轮修复前后的状态指纹，用来判断有没有实质进展。"""
+    acceptance = run.acceptance
+    test = latest_test_result(run)
+    return (
+        acceptance.status.value,
+        acceptance.verdict,
+        (acceptance.summary or "")[:120],
+        test.exit_code if test is not None else None,
+    )

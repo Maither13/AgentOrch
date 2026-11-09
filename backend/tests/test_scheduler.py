@@ -10,8 +10,9 @@ from app.agents.base import AgentRunResult
 from app.agents.registry import Team
 from app.core.errors import AppError
 from app.llm.client import Usage
-from app.orchestration.models import RunState, TaskSpec, TaskState, TaskStatus
+from app.orchestration.models import RunState, RunStatus, TaskSpec, TaskState, TaskStatus
 from app.orchestration.scheduler import execute_run, validate_task_list
+from app.orchestration.store import RunStore
 from app.orchestration.workspace import Workspace
 
 TASKS = [
@@ -227,3 +228,15 @@ async def test_upstream_output_injected_as_context(tmp_path):
     assert "tasks/T1.md" in context
     assert "工作区" in context
     assert "开发产出" not in context
+    # tasks/ 是系统留档，不能混进“新增代码文件”
+    assert run.tasks[0].files == []
+
+
+def test_store_evicts_rejected_runs():
+    store = RunStore(max_runs=1)
+    store.add(RunState(id="r1", status=RunStatus.rejected, tasks=[]))
+    store.add(RunState(id="r2", status=RunStatus.running, tasks=[]))
+
+    store.get("r2")
+    with pytest.raises(AppError):
+        store.get("r1")

@@ -113,6 +113,11 @@ def test_run_workflow_mock(client):
     assert body["status"] == "completed"
     assert len(body["tasks"]) == 7
     assert all(task["status"] == "completed" for task in body["tasks"])
+    # mock 模式也返回验收结论和工具留痕
+    assert body["acceptance"]["status"] == "passed"
+    tester_task = next(task for task in body["tasks"] if task["spec"]["owner"] == "tester")
+    assert tester_task["test_result"]["exit_code"] == 0
+    assert tester_task["tool_calls"]
 
 
 # --------------------------------------------------------------------------- #

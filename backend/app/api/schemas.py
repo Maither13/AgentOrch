@@ -1,4 +1,4 @@
-﻿"""API 请求 / 响应模型。"""
+"""API 请求 / 响应模型。"""
 
 from __future__ import annotations
 
@@ -83,6 +83,7 @@ class ToolOut(BaseModel):
     name: str
     display_name: str
     description: str
+    implemented: bool = True
 
 
 class AgentSpecOut(BaseModel):
