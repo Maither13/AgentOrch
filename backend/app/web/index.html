@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AgentOrch · 联调台</title>
+<title>AgentOrch · 编排工作台</title>
 <style>
   :root {
-    --bg: #080d1a;
-    --panel: #0f1729;
-    --panel-2: #131d33;
+    --bg: #070c17;
+    --panel: #0e1626;
+    --panel-2: #121d31;
     --line: #1e2b47;
     --text: #e8eeff;
     --muted: #8fa1c4;
@@ -17,139 +17,233 @@
     --ok: #34d399;
     --warn: #fbbf24;
     --err: #f87171;
+    --skip: #94a3b8;
     --radius: 14px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0;
-    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     background:
-      radial-gradient(900px 500px at 15% -10%, rgba(79,140,255,.16), transparent 60%),
-      radial-gradient(700px 400px at 95% 0%, rgba(139,92,246,.12), transparent 55%),
+      radial-gradient(900px 500px at 10% -10%, rgba(79,140,255,.15), transparent 60%),
+      radial-gradient(700px 400px at 100% 0%, rgba(139,92,246,.10), transparent 55%),
       var(--bg);
-    color: var(--text);
-    display: flex;
-    flex-direction: column;
-    min-height: 100dvh;
+    color: var(--text); min-height: 100dvh;
   }
+  [hidden] { display: none !important; }
+  code, pre { font-family: "Cascadia Code", Consolas, monospace; }
 
   /* ---------- 顶栏 ---------- */
   .topbar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; padding: 18px 28px; border-bottom: 1px solid var(--line);
-    background: rgba(8, 13, 26, .72); backdrop-filter: blur(12px);
-    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 14px 24px; border-bottom: 1px solid var(--line);
+    background: rgba(7,12,23,.8); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 20;
   }
-  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
   .logo {
-    width: 40px; height: 40px; border-radius: 12px;
-    display: grid; place-items: center;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    font-size: 20px; color: #fff; box-shadow: 0 6px 18px rgba(79,140,255,.35);
+    width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+    font-size: 18px; box-shadow: 0 6px 16px rgba(79,140,255,.35);
   }
-  .brand h1 { margin: 0; font-size: 18px; letter-spacing: .3px; }
-  .brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
-  .status { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 4px rgba(251,191,36,.12); }
-  .dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(52,211,153,.14); }
-  .dot.bad { background: var(--err); box-shadow: 0 0 0 4px rgba(248,113,113,.14); }
+  .brand h1 { margin: 0; font-size: 17px; letter-spacing: .3px; }
+  .brand p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+  .top-stats { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-  /* ---------- 布局 ---------- */
-  .layout {
-    flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 330px;
-    gap: 18px; padding: 18px 28px 22px; max-width: 1500px; width: 100%; margin: 0 auto;
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--muted);
+    white-space: nowrap;
   }
-  .chat-panel {
-    display: flex; flex-direction: column; min-height: 0;
-    border: 1px solid var(--line); border-radius: var(--radius);
-    background: linear-gradient(180deg, rgba(19,29,51,.6), rgba(15,23,41,.6));
-    overflow: hidden;
-  }
-  .messages { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
-  .messages::-webkit-scrollbar { width: 8px; }
-  .messages::-webkit-scrollbar-thumb { background: #22304d; border-radius: 8px; }
+  .pill.ok { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+  .pill.run { color: var(--accent); border-color: rgba(79,140,255,.4); background: rgba(79,140,255,.1); }
+  .pill.warn { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+  .pill.err { color: var(--err); border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+  .pill.pass { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+  .pill.skip { color: var(--skip); }
 
-  .empty { margin: auto; text-align: center; color: var(--muted); max-width: 420px; line-height: 1.8; }
-  .empty strong { color: var(--text); font-weight: 600; }
-  .empty .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
-  .chip {
-    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
-    padding: 7px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; transition: .15s;
-  }
-  .chip:hover { color: var(--text); border-color: rgba(79,140,255,.55); }
-
-  .msg { display: flex; gap: 10px; max-width: 86%; }
-  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
-  .avatar {
-    flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
-    font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
-  }
-  .msg.user .avatar { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: 0; }
-  .bubble {
-    padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.7;
-    background: var(--panel-2); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word;
-  }
-  .msg.user .bubble { background: rgba(79,140,255,.14); border-color: rgba(79,140,255,.3); }
-  .bubble.pending { color: var(--muted); }
-  .meta { margin-top: 7px; font-size: 11px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
-  .reasoning {
-    margin-bottom: 9px; padding: 9px 11px; border-left: 2px solid rgba(139,92,246,.6);
-    background: rgba(139,92,246,.07); border-radius: 0 8px 8px 0; color: var(--muted); font-size: 12.5px;
-  }
-  .reasoning summary { cursor: pointer; color: #b7a6ff; }
-
-  /* ---------- 输入区 ---------- */
-  .composer { border-top: 1px solid var(--line); padding: 14px 16px 16px; background: rgba(8,13,26,.45); }
-  .composer textarea {
-    width: 100%; resize: none; min-height: 56px; max-height: 220px;
-    background: var(--panel); color: var(--text); border: 1px solid var(--line);
-    border-radius: 11px; padding: 12px 14px; font: inherit; font-size: 14px; line-height: 1.6; outline: none;
-    transition: border-color .15s, box-shadow .15s;
-  }
-  .composer textarea:focus { border-color: rgba(79,140,255,.65); box-shadow: 0 0 0 3px rgba(79,140,255,.12); }
-  .composer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 12px; }
-  .hint { font-size: 12px; color: var(--muted); }
   button {
-    font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
-    background: var(--panel-2); color: var(--text); padding: 9px 16px; transition: .15s;
+    font: inherit; cursor: pointer; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); padding: 8px 14px; transition: .15s;
   }
   button:hover:not(:disabled) { border-color: rgba(79,140,255,.55); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
   button.primary {
     border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #fff; font-weight: 600; padding: 10px 22px; box-shadow: 0 6px 16px rgba(79,140,255,.25);
+    color: #fff; font-weight: 600; box-shadow: 0 6px 16px rgba(79,140,255,.25);
   }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.ghost { background: transparent; }
 
-  /* ---------- 侧栏 ---------- */
-  .side { display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; }
-  .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 16px; }
-  .card h2 { margin: 0 0 12px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 5px 0; }
+  /* ---------- 布局 ---------- */
+  .shell { display: grid; grid-template-columns: 150px minmax(0,1fr); min-height: calc(100dvh - 65px); }
+  .rail { border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .rail button {
+    text-align: left; border: 0; background: transparent; color: var(--muted); padding: 9px 12px;
+    border-radius: 9px; font-size: 13.5px;
+  }
+  .rail button.active { background: rgba(79,140,255,.12); color: var(--text); font-weight: 600; }
+  .rail button:hover { background: rgba(255,255,255,.04); }
+  main { padding: 18px; min-width: 0; }
+
+  .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+
+  /* ---------- 画布 ---------- */
+  .toolbar { display: flex; gap: 10px; align-items: center; padding: 12px 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar input[type="text"] {
+    flex: 1; min-width: 260px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 9px; padding: 9px 12px; font: inherit; font-size: 13.5px; outline: none;
+  }
+  .toolbar input:focus { border-color: rgba(79,140,255,.6); }
+  .toolbar select {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 9px; padding: 9px 10px; font: inherit; font-size: 13px; outline: none;
+  }
+  .canvas-layout { display: grid; grid-template-columns: minmax(0,1fr) 330px; gap: 14px; align-items: start; }
+  .canvas-wrap { overflow: auto; padding: 8px; }
+  #dag { display: block; width: 100%; height: auto; }
+  .inspector { padding: 16px; min-height: 300px; }
+  .inspector h3 { margin: 0 0 4px; font-size: 15px; }
+  .inspector .role { color: var(--muted); font-size: 12px; }
+  .inspector section { margin-top: 14px; }
+  .inspector h4 {
+    margin: 0 0 7px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+    font-size: 11.5px; color: var(--muted); background: var(--panel-2);
+  }
+  .chip.on { color: var(--ok); border-color: rgba(52,211,153,.3); }
+  .chip.off { opacity: .45; border-style: dashed; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 4px 0; }
   .kv span:first-child { color: var(--muted); }
-  .kv span:last-child { text-align: right; word-break: break-all; }
-  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); }
-  .badge.live { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
-  .badge.mock { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
-  .badge.off { color: var(--err); border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
-
-  .field { margin-top: 12px; }
-  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  select, input[type="text"] {
-    width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 13px; outline: none;
+  .preview {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px;
+    padding: 10px; font-size: 12px; line-height: 1.6; max-height: 200px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; color: #c8d5ee;
   }
-  input[type="range"] { width: 100%; accent-color: var(--accent); }
-  .switch { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 7px 0; }
-  .switch input { accent-color: var(--accent); width: 16px; height: 16px; }
-  .tip { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0; padding-left: 16px; }
-  .tip li { margin-bottom: 5px; }
 
-  @media (max-width: 960px) {
-    .layout { grid-template-columns: 1fr; padding: 14px; }
-    .side { overflow: visible; }
-    .msg { max-width: 95%; }
+  /* ---------- SVG 节点 ---------- */
+  .node { cursor: pointer; }
+  .node rect.node-bg { fill: #0f1a2d; stroke: #243452; stroke-width: 1.2; transition: .2s; }
+  .node:hover rect.node-bg { stroke: rgba(79,140,255,.7); }
+  .node .node-title { fill: #e8eeff; font-size: 13.5px; font-weight: 600; }
+  .node .node-sub { fill: #8fa1c4; font-size: 11px; }
+  .node .node-dot { fill: #64748b; }
+  .node.status-running rect.node-bg { stroke: rgba(79,140,255,.9); fill: rgba(79,140,255,.1); }
+  .node.status-running .node-dot { fill: var(--accent); }
+  .node.status-completed rect.node-bg { stroke: rgba(52,211,153,.55); fill: rgba(52,211,153,.08); }
+  .node.status-completed .node-dot { fill: var(--ok); }
+  .node.status-failed rect.node-bg { stroke: rgba(248,113,113,.6); fill: rgba(248,113,113,.08); }
+  .node.status-failed .node-dot { fill: var(--err); }
+  .node.status-skipped rect.node-bg { stroke: rgba(148,163,184,.4); fill: rgba(148,163,184,.06); }
+  .node.status-skipped .node-dot { fill: var(--skip); }
+  .node.selected rect.node-bg { stroke: #fff; stroke-width: 1.6; }
+  .layer-label { fill: #55688c; font-size: 11px; letter-spacing: .1em; }
+  .edge { fill: none; stroke: #2a3a5c; stroke-width: 1.5; }
+  .edge.active { stroke: rgba(79,140,255,.65); }
+
+  /* ---------- 团队 ---------- */
+  .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .agent-card { padding: 16px; }
+  .agent-head { display: flex; gap: 12px; align-items: center; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
+    background: linear-gradient(135deg, rgba(79,140,255,.25), rgba(139,92,246,.25));
+    border: 1px solid rgba(79,140,255,.3); font-size: 13px; font-weight: 700; color: #cfe0ff;
+  }
+  .agent-head h3 { margin: 0; font-size: 14.5px; }
+  .agent-head p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+  .agent-desc { color: var(--muted); font-size: 12.5px; line-height: 1.65; margin: 12px 0; }
+  details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  details pre {
+    white-space: pre-wrap; word-break: break-word; font-size: 11.5px; line-height: 1.6;
+    color: #b9c8e4; background: var(--panel-2); border-radius: 8px; padding: 10px; margin: 8px 0 0;
+    max-height: 220px; overflow: auto;
+  }
+
+  /* ---------- 运行 ---------- */
+  .runs-layout { display: grid; grid-template-columns: 290px minmax(0,1fr); gap: 14px; align-items: start; }
+  .run-list { padding: 10px; max-height: calc(100dvh - 140px); overflow: auto; }
+  .run-item {
+    width: 100%; text-align: left; border: 1px solid transparent; background: transparent;
+    border-radius: 10px; padding: 10px 11px; margin-bottom: 4px;
+  }
+  .run-item:hover { background: rgba(255,255,255,.03); }
+  .run-item.active { border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.08); }
+  .run-item-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .run-item code { font-size: 11px; color: var(--muted); }
+  .run-item-goal {
+    font-size: 12.5px; color: #cdd9ef; margin: 6px 0 4px; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .run-item-meta { font-size: 11px; color: var(--muted); }
+
+  .run-detail { padding: 16px; min-height: 500px; }
+  .run-detail h2 { margin: 0; font-size: 16px; }
+  .detail-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .detail-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .acceptance {
+    margin-top: 14px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; background: var(--panel-2); font-size: 12.5px; line-height: 1.7;
+  }
+  .acceptance.warn { border-color: rgba(251,191,36,.4); }
+  .acceptance.err { border-color: rgba(248,113,113,.4); }
+  .acceptance.ok { border-color: rgba(52,211,153,.35); }
+  .task-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12.5px; }
+  .task-table th {
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; letter-spacing: .05em;
+    padding: 8px 8px; border-bottom: 1px solid var(--line);
+  }
+  .task-table td { padding: 9px 8px; border-bottom: 1px solid rgba(30,43,71,.55); vertical-align: top; }
+  .task-table tr:last-child td { border-bottom: 0; }
+  .task-name b { display: block; font-size: 12.5px; }
+  .task-name small { color: var(--muted); }
+  .task-files { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+  .task-files code { font-size: 10.5px; }
+
+  .timeline { margin-top: 8px; max-height: 320px; overflow: auto; padding-right: 4px; }
+  .tl-item {
+    display: grid; grid-template-columns: 62px 14px minmax(0,1fr) auto;
+    gap: 8px; align-items: start; padding: 5px 0; font-size: 12px;
+  }
+  .tl-time { color: #5f7296; font-variant-numeric: tabular-nums; font-size: 11px; padding-top: 2px; }
+  .tl-dot { width: 8px; height: 8px; border-radius: 50%; background: #334155; margin: 4px auto 0; }
+  .tl-item.info .tl-dot { background: var(--accent); }
+  .tl-item.warning .tl-dot { background: var(--warn); }
+  .tl-item.error .tl-dot { background: var(--err); }
+  .tl-msg { color: #c3d1ea; line-height: 1.55; word-break: break-word; }
+  .tl-task {
+    font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 999px; align-self: start;
+  }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.8; }
+
+  /* ---------- Self-Loop ---------- */
+  .loop-summary { padding: 16px; margin-bottom: 14px; }
+  .loop-summary h2 { margin: 0 0 10px; font-size: 15px; }
+  .round-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .round-card { padding: 14px; }
+  .round-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .round-head h3 { margin: 0; font-size: 13.5px; }
+  .round-task {
+    border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; margin-top: 8px;
+    background: var(--panel-2); font-size: 12px;
+  }
+  .round-task .rt-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .round-task small { color: var(--muted); font-size: 11px; }
+  .round-task p { margin: 6px 0 0; color: #b9c8e4; font-size: 11.5px; line-height: 1.55; }
+  .round-verdict { margin-top: 10px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 8px; }
+  .round-verdict b { color: var(--text); }
+  .initial-tasks { margin-bottom: 14px; }
+
+  @media (max-width: 1100px) {
+    .canvas-layout { grid-template-columns: 1fr; }
+    .inspector { min-height: 0; }
+    .shell { grid-template-columns: 1fr; }
+    .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+    .runs-layout { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -159,348 +253,618 @@
       <div class="logo">◈</div>
       <div>
         <h1>AgentOrch</h1>
-        <p>多智能体编排平台 · FastAPI × DeepSeek 联调台</p>
+        <p>多智能体编排调度平台 · 编排工作台</p>
       </div>
     </div>
-    <div class="status">
-      <span id="statusDot" class="dot"></span>
-      <span id="statusText">正在连接后端…</span>
+    <div class="top-stats">
+      <span class="pill" id="llmPill">连接中…</span>
+      <span class="pill" id="teamPill">团队 —</span>
+      <span class="pill" id="runPill">当前运行 —</span>
+      <button id="refreshBtn">刷新</button>
     </div>
   </header>
 
-  <main class="layout">
-    <section class="chat-panel">
-      <div id="messages" class="messages">
-        <div class="empty" id="emptyState">
-          <strong>骨架已跑通，先聊一句试试。</strong><br />
-          这里验证 FastAPI 与 DeepSeek 的链路：普通调用、SSE 流式、错误处理。<br />
-          下一步再往上叠 Agent 团队、DAG 工作流与调度引擎。
-          <div class="chips">
-            <span class="chip" data-prompt="用三句话说明什么是多智能体编排">多智能体编排是什么？</span>
-            <span class="chip" data-prompt="给我一个学生成绩管理系统的后端 API 设计草案">设计一个后端 API</span>
-            <span class="chip" data-prompt="用 JSON 返回 {&quot;status&quot;:&quot;ok&quot;}">测试 JSON 模式</span>
+  <div class="shell">
+    <nav class="rail">
+      <button class="active" data-view="canvas">编排画布</button>
+      <button data-view="team">团队面板</button>
+      <button data-view="runs">运行监控</button>
+      <button data-view="loop">Self-Loop</button>
+    </nav>
+
+    <main>
+      <!-- 画布 -->
+      <section id="view-canvas">
+        <div class="panel toolbar">
+          <input id="goalInput" type="text" value="做一个学生成绩管理系统的后端 API" />
+          <select id="maxRounds" title="最大修复轮次">
+            <option value="0">0 轮修复</option>
+            <option value="1">1 轮修复</option>
+            <option value="2">2 轮修复</option>
+            <option value="3" selected>3 轮修复</option>
+          </select>
+          <select id="maxParallel" title="最大并行度">
+            <option value="1">串行</option>
+            <option value="2" selected>并行 2</option>
+            <option value="3">并行 3</option>
+          </select>
+          <button class="primary" id="startBtn">启动运行</button>
+          <span id="runHint" class="small muted"></span>
+        </div>
+        <div class="canvas-layout">
+          <div class="panel canvas-wrap">
+            <svg id="dag" role="img" aria-label="工作流 DAG"></svg>
           </div>
+          <aside class="panel inspector" id="inspector">
+            <div class="empty">点击画布节点查看步骤详情</div>
+          </aside>
         </div>
-      </div>
+      </section>
 
-      <form id="composer" class="composer">
-        <textarea id="input" rows="2" placeholder="输入消息…（Enter 发送，Shift + Enter 换行）"></textarea>
-        <div class="composer-actions">
-          <span class="hint" id="hint">DeepSeek 通道就绪后即可对话</span>
-          <div style="display:flex;gap:8px">
-            <button type="button" class="ghost" id="clearBtn">清空</button>
-            <button type="submit" class="primary" id="sendBtn">发送</button>
-          </div>
-        </div>
-      </form>
-    </section>
+      <!-- 团队 -->
+      <section id="view-team" hidden>
+        <div class="team-grid" id="teamGrid"></div>
+      </section>
 
-    <aside class="side">
-      <div class="card">
-        <h2>连接状态</h2>
-        <div class="kv"><span>模式</span><span id="kvMode">—</span></div>
-        <div class="kv"><span>模型</span><span id="kvModel">—</span></div>
-        <div class="kv"><span>延迟</span><span id="kvLatency">—</span></div>
-        <div class="kv"><span>用量</span><span id="kvUsage">—</span></div>
-        <div style="margin-top:12px;display:flex;gap:8px">
-          <button id="pingBtn" style="flex:1">连通性探测</button>
+      <!-- 运行 -->
+      <section id="view-runs" hidden>
+        <div class="runs-layout">
+          <aside class="panel run-list" id="runList"></aside>
+          <div class="panel run-detail" id="runDetail"></div>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <h2>调用参数</h2>
-        <div class="field">
-          <label for="model">模型</label>
-          <select id="model"></select>
-        </div>
-        <div class="field">
-          <label for="system">系统提示词</label>
-          <input id="system" type="text" value="你是 AgentOrch 平台的内置助手，回答简洁、准确。" />
-        </div>
-        <div class="field">
-          <label for="temperature">温度 <span id="tempValue">0.7</span></label>
-          <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7" />
-        </div>
-        <div class="switch"><span>流式输出</span><input id="stream" type="checkbox" checked /></div>
-        <div class="switch"><span>JSON 模式</span><input id="jsonMode" type="checkbox" /></div>
-      </div>
-
-      <div class="card">
-        <h2>接口清单</h2>
-        <div class="kv"><span>GET</span><span>/api/v1/health</span></div>
-        <div class="kv"><span>POST</span><span>/api/v1/llm/ping</span></div>
-        <div class="kv"><span>POST</span><span>/api/v1/chat</span></div>
-        <div class="kv"><span>POST</span><span>/api/v1/chat/stream</span></div>
-        <p class="tip" style="margin-top:10px;padding-left:0">
-          完整文档：<a href="/docs" style="color:var(--accent)">/docs</a>
-        </p>
-      </div>
-    </aside>
-  </main>
+      <!-- Self-Loop -->
+      <section id="view-loop" hidden>
+        <div class="panel loop-summary" id="loopSummary"></div>
+        <div id="loopRounds"></div>
+      </section>
+    </main>
+  </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const els = {
-  messages: $("messages"), empty: $("emptyState"), input: $("input"),
-  sendBtn: $("sendBtn"), clearBtn: $("clearBtn"), pingBtn: $("pingBtn"),
-  model: $("model"), system: $("system"), temperature: $("temperature"),
-  tempValue: $("tempValue"), stream: $("stream"), jsonMode: $("jsonMode"),
-  statusDot: $("statusDot"), statusText: $("statusText"), hint: $("hint"),
-  kvMode: $("kvMode"), kvModel: $("kvModel"), kvLatency: $("kvLatency"), kvUsage: $("kvUsage"),
+  llmPill: $("llmPill"), teamPill: $("teamPill"), runPill: $("runPill"),
+  goal: $("goalInput"), rounds: $("maxRounds"), parallel: $("maxParallel"),
+  start: $("startBtn"), hint: $("runHint"), refresh: $("refreshBtn"),
+  dag: $("dag"), inspector: $("inspector"),
+  teamGrid: $("teamGrid"), runList: $("runList"), runDetail: $("runDetail"),
+  loopSummary: $("loopSummary"), loopRounds: $("loopRounds"),
+  views: {
+    canvas: $("view-canvas"), team: $("view-team"),
+    runs: $("view-runs"), loop: $("view-loop"),
+  },
 };
 
-const state = { history: [], busy: false, models: [] };
+const state = {
+  health: null, workflow: null, team: null,
+  runs: [], run: null, selectedRunId: null, selectedStep: null,
+  view: "canvas",
+};
 
-/* ---------------- 基础渲染 ---------------- */
-function setStatus(kind, text) {
-  els.statusDot.className = "dot" + (kind ? " " + kind : "");
-  els.statusText.textContent = text;
+const RUN_LABEL = {
+  pending: "排队", running: "运行中", completed: "完成",
+  failed: "失败", rejected: "驳回", needs_revision: "待人工",
+};
+const TASK_LABEL = {
+  pending: "待执行", running: "执行中", completed: "完成",
+  failed: "失败", skipped: "跳过",
+};
+const ACCEPT_LABEL = {
+  pending: "待验收", passed: "通过", rejected: "驳回", needs_revision: "需人工",
+};
+
+const plain = (value = "") => String(value).replace(/\*\*/g, "").replace(/`/g, "");
+const esc = (value = "") => String(value).replace(/[&<>"']/g, (ch) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[ch]));
+
+function fmtMs(ms) {
+  if (ms === null || ms === undefined) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+function fmtTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+function fmtClock(value) {
+  if (!value) return "";
+  return new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
+}
+function statusClass(status) {
+  if (status === "completed" || status === "passed") return "pass";
+  if (status === "running") return "run";
+  if (status === "failed" || status === "rejected" || status === "needs_revision") return "err";
+  if (status === "skipped") return "skip";
+  return "";
+}
+function pill(status, labels) {
+  const label = (labels && labels[status]) || status;
+  return `<span class="pill ${statusClass(status)}">${esc(label)}</span>`;
 }
 
-function scrollToBottom() {
-  els.messages.scrollTop = els.messages.scrollHeight;
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      message = body?.error?.message || JSON.stringify(body);
+    } catch (_) { /* ignore */ }
+    throw new Error(message);
+  }
+  return response.json();
 }
 
-function addMessage(role, text) {
-  els.empty?.remove();
-  const wrap = document.createElement("div");
-  wrap.className = "msg " + role;
-  const avatar = document.createElement("div");
-  avatar.className = "avatar";
-  avatar.textContent = role === "user" ? "我" : "AI";
-  const bubble = document.createElement("div");
-  bubble.className = "bubble" + (text ? "" : " pending");
-  const content = document.createElement("div");
-  content.className = "content";
-  content.textContent = text || "…";
-  bubble.append(content);
-  wrap.append(avatar, bubble);
-  els.messages.append(wrap);
-  scrollToBottom();
-  return { wrap, bubble, content };
-}
-
-function addMeta(bubble, parts) {
-  if (!parts.length) return;
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  meta.textContent = parts.join(" · ");
-  bubble.append(meta);
-}
-
-/* ---------------- 启动：拉健康状态与模型 ---------------- */
+/* ---------------- 初始化 ---------------- */
 async function boot() {
   try {
-    const health = await fetch("/api/v1/health").then((r) => r.json());
-    const llm = health.llm;
-    const modeText = { live: "真实调用", mock: "本地模拟", unconfigured: "未配置" }[llm.mode] || llm.mode;
-    els.kvMode.innerHTML = `<span class="badge ${llm.mode}">${modeText}</span>`;
-    els.kvModel.textContent = llm.model;
-    setStatus(llm.mode === "live" ? "ok" : llm.mode === "mock" ? "" : "bad",
-      llm.mode === "live" ? "DeepSeek 通道就绪" : llm.mode === "mock" ? "Mock 模式（不发真实请求）" : "未配置 API Key");
-    els.hint.textContent = llm.mode === "live" ? "模型已就绪，Enter 发送" : "配置 DEEPSEEK_API_KEY 后可真实调用";
+    const [health, workflow, team, runs] = await Promise.all([
+      api("/api/v1/health"),
+      api("/api/v1/workflows/software_development"),
+      api("/api/v1/team"),
+      api("/api/v1/runs?limit=12"),
+    ]);
+    state.health = health;
+    state.workflow = workflow;
+    state.team = team;
+    state.runs = runs;
 
-    state.models = await fetch("/api/v1/llm/models").then((r) => r.json());
-    els.model.innerHTML = state.models
-      .map((m) => `<option value="${m.id}">${m.label}</option>`)
-      .join("");
-  } catch (err) {
-    console.error(err);
-    setStatus("bad", "后端不可用");
-    els.hint.textContent = "无法连接后端，请确认 uvicorn 已启动";
-  }
-}
-
-/* ---------------- 连通性探测 ---------------- */
-async function ping() {
-  els.pingBtn.disabled = true;
-  els.pingBtn.textContent = "探测中…";
-  try {
-    const started = performance.now();
-    const resp = await fetch("/api/v1/llm/ping", { method: "POST" });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data?.error?.message || `HTTP ${resp.status}`);
-    const rtt = Math.round(performance.now() - started);
-    els.kvLatency.textContent = `${data.latency_ms} ms（往返 ${rtt} ms）`;
-    els.kvUsage.textContent = `${data.usage.total_tokens} tokens`;
-    els.hint.textContent = `探测成功：${data.reply} · ${data.mode}`;
-    setStatus(data.mode === "live" ? "ok" : "", data.mode === "live" ? "DeepSeek 通道就绪" : "Mock 模式");
-  } catch (err) {
-    els.kvLatency.textContent = "—";
-    els.hint.textContent = "探测失败：" + err.message;
-    setStatus("bad", "连接失败");
-  } finally {
-    els.pingBtn.disabled = false;
-    els.pingBtn.textContent = "连通性探测";
-  }
-}
-
-/* ---------------- 发送 ---------------- */
-function buildPayload() {
-  const messages = [];
-  const sys = els.system.value.trim();
-  if (sys) messages.push({ role: "system", content: sys });
-  messages.push(...state.history);
-  return {
-    messages,
-    model: els.model.value || null,
-    temperature: parseFloat(els.temperature.value),
-    json_mode: els.jsonMode.checked,
-    stream: els.stream.checked,
-  };
-}
-
-async function send(text) {
-  if (state.busy) return;
-  state.busy = true;
-  els.sendBtn.disabled = true;
-
-  addMessage("user", text);
-  state.history.push({ role: "user", content: text });
-
-  const { bubble: replyBubble, content: replyContent } = addMessage("assistant", "");
-  const reasoningBox = document.createElement("div");
-  reasoningBox.className = "reasoning";
-  reasoningBox.hidden = true;
-  reasoningBox.innerHTML = '<div style="font-size:11px;color:#b7a6ff;margin-bottom:4px">推理过程</div><div class="reasoning-body"></div>';
-  replyBubble.prepend(reasoningBox);
-
-  let content = "";
-  let reasoning = "";
-  let meta = [];
-
-  const applyDelta = (delta) => {
-    content += delta;
-    replyContent.textContent = content;
-    scrollToBottom();
-  };
-
-  try {
-    const payload = buildPayload();
-    if (payload.stream) {
-      const resp = await fetch("/api/v1/chat/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => null);
-        throw new Error(err?.error?.message || `HTTP ${resp.status}`);
-      }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let index;
-        while ((index = buffer.indexOf("\n\n")) >= 0) {
-          const raw = buffer.slice(0, index).trim();
-          buffer = buffer.slice(index + 2);
-          if (!raw.startsWith("data:")) continue;
-          const event = JSON.parse(raw.slice(5).trim());
-          if (event.type === "delta") applyDelta(event.delta);
-          else if (event.type === "reasoning") {
-            reasoning += event.delta;
-            reasoningBox.hidden = false;
-            reasoningBox.querySelector(".reasoning-body").textContent = reasoning;
-            scrollToBottom();
-          } else if (event.type === "error") {
-            throw new Error(event.message);
-          } else if (event.type === "done") {
-            els.kvLatency.textContent = `${event.latency_ms} ms`;
-            meta = [
-              payload.model || "deepseek",
-              `${event.latency_ms} ms`,
-              `${event.usage?.total_tokens ?? 0} tokens`,
-              event.mode === "mock" ? "mock" : "",
-            ].filter(Boolean);
-          }
-        }
-      }
+    renderHeader();
+    buildDag();
+    renderTeam();
+    renderRunsList();
+    if (runs.length) {
+      // 优先选最近的固定工作流运行，画布状态才能和步骤对上
+      const initial = runs.find((run) => run.workflow) || runs[0];
+      await selectRun(initial.id);
     } else {
-      const resp = await fetch("/api/v1/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data?.error?.message || `HTTP ${resp.status}`);
-      content = data.content;
-      replyContent.textContent = content;
-      els.kvLatency.textContent = `${data.latency_ms} ms`;
-      if (data.reasoning_content) {
-        reasoningBox.hidden = false;
-        reasoningBox.querySelector(".reasoning-body").textContent = data.reasoning_content;
-      }
-      meta = [
-        data.model,
-        `${data.latency_ms} ms`,
-        `${data.usage?.total_tokens ?? 0} tokens`,
-        data.mode === "mock" ? "mock" : "",
-      ].filter(Boolean);
+      renderRunDetail();
+      renderLoop();
     }
-
-    replyBubble.classList.remove("pending");
-    if (!content) replyContent.textContent = "（空响应）";
-    addMeta(replyBubble, meta);
-    state.history.push({ role: "assistant", content });
-    els.kvUsage.textContent = meta.find((m) => m.endsWith("tokens")) || "—";
-  } catch (err) {
-    replyBubble.classList.remove("pending");
-    replyContent.textContent = "⚠ " + err.message;
-    replyBubble.style.borderColor = "rgba(248,113,113,.45)";
-    replyBubble.style.color = "#fca5a5";
-    setStatus("bad", "调用失败");
-    els.hint.textContent = "调用失败：" + err.message;
-  } finally {
-    state.busy = false;
-    els.sendBtn.disabled = false;
-    els.input.focus();
+    setInterval(poll, 2000);
+  } catch (error) {
+    els.llmPill.textContent = "后端不可用";
+    els.llmPill.className = "pill err";
+    els.inspector.innerHTML = `<div class="empty">加载失败：${esc(error.message)}</div>`;
   }
 }
 
-/* ---------------- 事件绑定 ---------------- */
-document.getElementById("composer").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const text = els.input.value.trim();
-  if (!text) return;
-  els.input.value = "";
-  send(text);
+function renderHeader() {
+  if (state.health) {
+    const mode = state.health.llm.mode;
+    els.llmPill.textContent = mode === "live" ? "DeepSeek 已连接" : mode === "mock" ? "Mock 模式" : "未配置 Key";
+    els.llmPill.className = `pill ${mode === "live" ? "ok" : mode === "mock" ? "warn" : "err"}`;
+  }
+  if (state.team) {
+    els.teamPill.textContent = `${state.team.name} · ${state.team.members.length} 人`;
+  }
+  if (state.run) {
+    els.runPill.textContent = `${state.run.id} · ${RUN_LABEL[state.run.status] || state.run.status}`;
+    els.runPill.className = `pill ${statusClass(state.run.status)}`;
+  } else {
+    els.runPill.textContent = "当前运行 —";
+    els.runPill.className = "pill";
+  }
+}
+
+/* ---------------- 画布 ---------------- */
+const NODE_W = 170, NODE_H = 64, GAP_X = 40, GAP_Y = 34, PAD_X = 30, PAD_Y = 42;
+let dagPositions = {};
+
+function buildDag() {
+  const workflow = state.workflow;
+  if (!workflow) return;
+  const layers = workflow.layers;
+  const stepByName = Object.fromEntries(workflow.steps.map((step) => [step.step_name, step]));
+
+  const layerHeights = layers.map((layer) => layer.length * NODE_H + (layer.length - 1) * GAP_Y);
+  const maxHeight = Math.max(...layerHeights);
+  const width = PAD_X * 2 + layers.length * NODE_W + (layers.length - 1) * GAP_X;
+  const height = maxHeight + PAD_Y * 2 + 20;
+
+  dagPositions = {};
+  layers.forEach((layer, layerIndex) => {
+    const blockHeight = layer.length * NODE_H + (layer.length - 1) * GAP_Y;
+    let y = PAD_Y + 14 + (maxHeight - blockHeight) / 2;
+    layer.forEach((name) => {
+      dagPositions[name] = { x: PAD_X + layerIndex * (NODE_W + GAP_X), y, layer: layerIndex };
+      y += NODE_H + GAP_Y;
+    });
+  });
+
+  const edges = [];
+  workflow.steps.forEach((step) => {
+    step.depends_on.forEach((dependency) => {
+      const from = dagPositions[dependency];
+      const to = dagPositions[step.step_name];
+      if (!from || !to) return;
+      const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+      const x2 = to.x, y2 = to.y + NODE_H / 2;
+      const curve = Math.max(28, (x2 - x1) / 2);
+      edges.push(`<path class="edge" data-from="${esc(dependency)}" data-to="${esc(step.step_name)}"
+        d="M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}" marker-end="url(#arrow)" />`);
+    });
+  });
+
+  const layerLabels = layers.map((layer, index) => {
+    const x = PAD_X + index * (NODE_W + GAP_X);
+    return `<text class="layer-label" x="${x}" y="${PAD_Y - 12}">L${index + 1}</text>`;
+  }).join("");
+
+  const nodes = layers.flat().map((name) => {
+    const step = stepByName[name];
+    const position = dagPositions[name];
+    const agent = state.team?.members.find((member) => member.id === step.agent);
+    return `<g class="node status-pending" data-step="${esc(name)}" transform="translate(${position.x}, ${position.y})">
+      <rect class="node-bg" width="${NODE_W}" height="${NODE_H}" rx="12" />
+      <circle class="node-dot" cx="18" cy="22" r="5" />
+      <text class="node-title" x="32" y="26">${esc(name)}</text>
+      <text class="node-sub" x="16" y="48">${esc(agent?.display_name || step.agent)} · L${position.layer + 1}</text>
+    </g>`;
+  }).join("");
+
+  els.dag.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  els.dag.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  els.dag.innerHTML = `<defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#33456b"></path>
+      </marker>
+    </defs>
+    ${layerLabels}
+    <g id="edgeLayer">${edges.join("")}</g>
+    <g id="nodeLayer">${nodes}</g>`;
+
+  els.dag.querySelectorAll(".node").forEach((node) => {
+    node.addEventListener("click", () => {
+      state.selectedStep = node.dataset.step;
+      document.querySelectorAll(".node").forEach((item) => item.classList.remove("selected"));
+      node.classList.add("selected");
+      renderInspector();
+    });
+  });
+  updateDagStatuses();
+}
+
+function taskForStep(stepName) {
+  if (!state.run) return null;
+  return state.run.tasks.find((task) => task.spec.title === stepName) || null;
+}
+
+function updateDagStatuses() {
+  if (!state.workflow) return;
+  els.dag.querySelectorAll(".node").forEach((node) => {
+    const task = taskForStep(node.dataset.step);
+    node.classList.remove("status-pending", "status-running", "status-completed", "status-failed", "status-skipped");
+    node.classList.add(`status-${task ? task.status : "pending"}`);
+  });
+  els.dag.querySelectorAll(".edge").forEach((edge) => {
+    const target = taskForStep(edge.dataset.to);
+    edge.classList.toggle("active", Boolean(target && target.status !== "pending"));
+  });
+}
+
+function renderInspector() {
+  const name = state.selectedStep;
+  if (!name) {
+    els.inspector.innerHTML = `<div class="empty">点击画布节点查看步骤详情</div>`;
+    return;
+  }
+  const step = state.workflow.steps.find((item) => item.step_name === name);
+  const agent = state.team.members.find((member) => member.id === step.agent);
+  const task = taskForStep(name);
+  const status = task ? task.status : "pending";
+  const tools = (agent?.allowed_tools || []).map((tool) =>
+    `<span class="chip ${tool.implemented ? "on" : "off"}" title="${esc(tool.description)}">${esc(tool.display_name)}</span>`
+  ).join("");
+
+  els.inspector.innerHTML = `
+    <h3>${esc(step.step_name)} ${pill(status, TASK_LABEL)}</h3>
+    <div class="role">${esc(agent?.display_name || step.agent)} · ${esc(step.agent)}</div>
+    <section>
+      <h4>依赖</h4>
+      <div class="chips">${step.depends_on.length ? step.depends_on.map((item) => `<span class="chip">${esc(item)}</span>`).join("") : '<span class="muted small">无（首层）</span>'}</div>
+    </section>
+    <section>
+      <h4>工具权限</h4>
+      <div class="chips">${tools}</div>
+    </section>
+    ${task ? `
+      <section>
+        <h4>本次执行</h4>
+        <div class="kv"><span>耗时</span><span>${fmtMs(task.duration_ms)}</span></div>
+        <div class="kv"><span>Token</span><span>${task.usage?.total_tokens ?? 0}</span></div>
+        <div class="kv"><span>文件</span><span>${task.files?.length || 0} 个</span></div>
+        ${task.test_result ? `<div class="kv"><span>pytest</span><span>退出码 ${task.test_result.exit_code}</span></div>` : ""}
+      </section>
+      ${task.error ? `<section><h4>错误</h4><div class="preview">${esc(task.error)}</div></section>` : ""}
+      ${task.output ? `<section><h4>输出摘要</h4><div class="preview">${esc(task.output.slice(0, 700))}</div></section>` : ""}
+    ` : ""}
+  `;
+}
+
+/* ---------------- 团队 ---------------- */
+function renderTeam() {
+  const members = state.team?.members || [];
+  els.teamGrid.innerHTML = members.map((member) => {
+    const initials = member.display_name.slice(0, 2);
+    const tools = member.allowed_tools.map((tool) =>
+      `<span class="chip ${tool.implemented ? "on" : "off"}" title="${esc(tool.description)}">${esc(tool.name)}</span>`
+    ).join("");
+    return `<article class="panel agent-card">
+      <div class="agent-head">
+        <div class="avatar">${esc(initials)}</div>
+        <div><h3>${esc(member.display_name)}</h3><p>${esc(member.id)}</p></div>
+      </div>
+      <p class="agent-desc">${esc(member.description)}</p>
+      <div class="chips">${tools}</div>
+      <details>
+        <summary>System Prompt</summary>
+        <pre>${esc(member.system_prompt)}</pre>
+      </details>
+    </article>`;
+  }).join("");
+}
+
+/* ---------------- 运行列表 / 详情 ---------------- */
+function renderRunsList() {
+  els.runList.innerHTML = state.runs.length ? state.runs.map((run) => `
+    <button class="run-item ${run.id === state.selectedRunId ? "active" : ""}" data-run="${esc(run.id)}">
+      <div class="run-item-top">
+        ${pill(run.status, RUN_LABEL)}
+        <code>${esc(run.id)}</code>
+      </div>
+      <div class="run-item-goal">${esc(run.goal || "（手动任务清单）")}</div>
+      <div class="run-item-meta">${run.completed}/${run.total} 完成 · 修复 ${run.rounds} 轮 · ${fmtTime(run.created_at)}</div>
+    </button>
+  `).join("") : `<div class="empty">还没有运行记录</div>`;
+}
+
+function renderRunDetail() {
+  const run = state.run;
+  if (!run) {
+    els.runDetail.innerHTML = `<div class="empty">选择左侧运行查看详情，或在编排画布启动一次运行</div>`;
+    return;
+  }
+  const acceptance = run.acceptance || {};
+  const acceptanceClass = acceptance.status === "passed" ? "ok" : acceptance.status === "rejected" || acceptance.status === "needs_revision" ? "err" : "";
+  const tasks = run.tasks.map((task) => `
+    <tr>
+      <td class="task-name"><b>${esc(task.spec.id)}</b><small>${esc(task.spec.title)}</small></td>
+      <td>${esc(task.agent_name || task.spec.owner)}</td>
+      <td>${pill(task.status, TASK_LABEL)}</td>
+      <td>${fmtMs(task.duration_ms)}</td>
+      <td>${task.usage?.total_tokens ?? 0}</td>
+      <td>${task.test_result ? `<span class="pill ${task.test_result.exit_code === 0 ? "pass" : "err"}">${task.test_result.exit_code}</span>` : "—"}</td>
+      <td><div class="task-files">${(task.files || []).slice(0, 4).map((file) => `<code>${esc(file)}</code>`).join("") || "—"}${(task.files || []).length > 4 ? `<span>… ${task.files.length - 4} 个</span>` : ""}</div></td>
+    </tr>
+  `).join("");
+
+  const logs = (run.logs || []).slice(-80).map((log) => `
+    <div class="tl-item ${log.level}">
+      <span class="tl-time">${fmtClock(log.at)}</span>
+      <span class="tl-dot"></span>
+      <span class="tl-msg">${esc(log.message)}</span>
+      ${log.task_id ? `<code class="tl-task">${esc(log.task_id)}</code>` : ""}
+    </div>
+  `).join("");
+
+  els.runDetail.innerHTML = `
+    <div class="detail-head">
+      <div>
+        <h2>${esc(run.id)}</h2>
+        <div class="small muted" style="margin-top:4px">${esc(run.goal || "手动任务清单")}</div>
+      </div>
+      <div class="small muted">${fmtTime(run.created_at)}</div>
+    </div>
+    <div class="detail-pills">
+      ${pill(run.status, RUN_LABEL)}
+      <span class="pill">执行 ${esc(run.execution_status)}</span>
+      ${pill(acceptance.status, ACCEPT_LABEL)}
+      <span class="pill">修复 ${run.rounds} 轮</span>
+      ${run.needs_human ? '<span class="pill err">需人工介入</span>' : ""}
+    </div>
+    <div class="acceptance ${acceptanceClass}">
+      <b>验收结论：</b>${esc(acceptance.verdict || "未给出")} · ${esc(ACCEPT_LABEL[acceptance.status] || acceptance.status || "待验收")}
+      ${acceptance.summary ? `<div style="margin-top:6px;color:#b9c8e4">${esc(plain(acceptance.summary.slice(0, 600)))}</div>` : ""}
+    </div>
+    <table class="task-table">
+      <thead><tr><th>步骤</th><th>Agent</th><th>状态</th><th>耗时</th><th>Token</th><th>pytest</th><th>交付文件</th></tr></thead>
+      <tbody>${tasks}</tbody>
+    </table>
+    <section style="margin-top:18px">
+      <h4 style="margin:0 0 4px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)">执行时间线</h4>
+      <div class="timeline">${logs || '<div class="muted small">暂无日志</div>'}</div>
+    </section>
+  `;
+}
+
+/* ---------------- Self-Loop ---------------- */
+function roundTasks(run) {
+  const rounds = new Map();
+  const initial = [];
+  for (const task of run.tasks) {
+    const match = task.spec.id.match(/^R(\d+)-(fix|test|review)$/);
+    if (!match) {
+      initial.push(task);
+      continue;
+    }
+    const round = Number(match[1]);
+    if (!rounds.has(round)) rounds.set(round, {});
+    rounds.get(round)[match[2]] = task;
+  }
+  return { initial, rounds: [...rounds.entries()].sort((a, b) => a[0] - b[0]) };
+}
+
+function roundVerdict(run, round) {
+  const prefix = `第 ${round} 轮复评：`;
+  const log = (run.logs || []).find((item) => item.message.startsWith(prefix));
+  return log ? log.message.slice(prefix.length) : "—";
+}
+
+function renderLoop() {
+  const run = state.run;
+  if (!run) {
+    els.loopSummary.innerHTML = `<div class="empty">选择一次运行后查看 Self-Loop 轮次</div>`;
+    els.loopRounds.innerHTML = "";
+    return;
+  }
+  const { initial, rounds } = roundTasks(run);
+  const acceptance = run.acceptance || {};
+  const needsHuman = run.needs_human ? '<span class="pill err">需人工介入</span>' : '<span class="pill pass">无需人工</span>';
+
+  els.loopSummary.innerHTML = `
+    <h2>${esc(run.id)} · Self-Loop</h2>
+    <div class="detail-pills">
+      ${pill(run.status, RUN_LABEL)}
+      <span class="pill">修复 ${run.rounds} 轮</span>
+      ${pill(acceptance.status, ACCEPT_LABEL)}
+      ${needsHuman}
+    </div>
+    <div class="small muted" style="margin-top:10px">
+      ${acceptance.summary ? esc(plain(acceptance.summary.slice(0, 300))) : "首轮执行 → 评审/测试失败 → 修复 → 重测 → 复评"}
+    </div>
+  `;
+
+  const initialHtml = `
+    <div class="panel round-card initial-tasks">
+      <div class="round-head"><h3>首轮执行</h3><span class="pill">${initial.length} 个任务</span></div>
+      ${initial.map((task) => `
+        <div class="round-task">
+          <div class="rt-top"><b>${esc(task.spec.id)} · ${esc(task.spec.title)}</b>${pill(task.status, TASK_LABEL)}</div>
+          <small>${esc(task.agent_name || task.spec.owner)} · ${fmtMs(task.duration_ms)} · ${task.usage?.total_tokens ?? 0} tokens</small>
+          ${task.test_result ? `<p>pytest 退出码 ${task.test_result.exit_code}</p>` : ""}
+        </div>
+      `).join("")}
+    </div>`;
+
+  const roundsHtml = rounds.map(([number, group]) => {
+    const verdict = roundVerdict(run, number);
+    const renderTask = (key, label) => {
+      const task = group[key];
+      if (!task) return "";
+      return `<div class="round-task">
+        <div class="rt-top"><b>${label} · ${esc(task.spec.id)}</b>${pill(task.status, TASK_LABEL)}</div>
+        <small>${esc(task.agent_name || task.spec.owner)} · ${fmtMs(task.duration_ms)} · ${task.usage?.total_tokens ?? 0} tokens</small>
+        ${task.test_result ? `<p>pytest 退出码 ${task.test_result.exit_code}</p>` : ""}
+        ${task.output ? `<p>${esc(task.output.slice(0, 160).replace(/\n/g, " "))}…</p>` : ""}
+      </div>`;
+    };
+    return `<div class="panel round-card">
+      <div class="round-head"><h3>第 ${number} 轮修复</h3><span class="pill">${Object.keys(group).length} 个任务</span></div>
+      ${renderTask("fix", "修复")}
+      ${renderTask("test", "重测")}
+      ${renderTask("review", "复评")}
+      <div class="round-verdict">复评结论：<b>${esc(verdict)}</b></div>
+    </div>`;
+  }).join("");
+
+  els.loopRounds.innerHTML = `<div class="round-grid">${initialHtml}${roundsHtml || ""}</div>`;
+}
+
+/* ---------------- 交互 ---------------- */
+function switchView(view) {
+  state.view = view;
+  Object.entries(els.views).forEach(([key, element]) => { element.hidden = key !== view; });
+  document.querySelectorAll(".rail button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === view);
+  });
+  if (view === "runs") renderRunDetail();
+  if (view === "loop") renderLoop();
+}
+
+document.querySelectorAll(".rail button").forEach((button) => {
+  button.addEventListener("click", () => switchView(button.dataset.view));
 });
 
-els.input.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    document.getElementById("composer").requestSubmit();
+els.start.addEventListener("click", async () => {
+  const goal = els.goal.value.trim();
+  if (!goal) return;
+  els.start.disabled = true;
+  els.hint.textContent = "创建运行中…";
+  try {
+    const run = await api("/api/v1/workflows/software_development/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        goal,
+        max_repair_rounds: Number(els.rounds.value),
+        max_parallel: Number(els.parallel.value),
+      }),
+    });
+    state.run = run;
+    state.selectedRunId = run.id;
+    state.runs = await api("/api/v1/runs?limit=12");
+    renderHeader();
+    renderRunsList();
+    renderRunDetail();
+    renderLoop();
+    updateDagStatuses();
+    els.hint.textContent = `已启动 ${run.id}`;
+    switchView("canvas");
+  } catch (error) {
+    els.hint.textContent = `启动失败：${error.message}`;
+  } finally {
+    els.start.disabled = false;
   }
 });
 
-els.input.addEventListener("input", () => {
-  els.input.style.height = "auto";
-  els.input.style.height = Math.min(els.input.scrollHeight, 220) + "px";
+els.runList.addEventListener("click", (event) => {
+  const item = event.target.closest("[data-run]");
+  if (item) selectRun(item.dataset.run);
 });
 
-els.clearBtn.addEventListener("click", () => {
-  state.history = [];
-  els.messages.innerHTML = "";
-  els.empty = null;
-  els.hint.textContent = "已清空，继续输入";
+els.refresh.addEventListener("click", async () => {
+  try {
+    state.runs = await api("/api/v1/runs?limit=12");
+    if (state.selectedRunId) state.run = await api(`/api/v1/runs/${state.selectedRunId}`);
+    renderHeader();
+    renderRunsList();
+    renderRunDetail();
+    renderLoop();
+    updateDagStatuses();
+    renderInspector();
+  } catch (error) {
+    els.hint.textContent = `刷新失败：${error.message}`;
+  }
 });
 
-els.pingBtn.addEventListener("click", ping);
+async function selectRun(runId) {
+  state.selectedRunId = runId;
+  try {
+    state.run = await api(`/api/v1/runs/${runId}`);
+  } catch (_) {
+    state.run = null;
+  }
+  renderHeader();
+  renderRunsList();
+  renderRunDetail();
+  renderLoop();
+  updateDagStatuses();
+  renderInspector();
+}
 
-els.temperature.addEventListener("input", () => {
-  els.tempValue.textContent = els.temperature.value;
-});
-
-document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
-    els.input.value = chip.dataset.prompt;
-    els.input.focus();
-  });
-});
+async function poll() {
+  try {
+    state.runs = await api("/api/v1/runs?limit=12");
+    if (state.selectedRunId) {
+      state.run = await api(`/api/v1/runs/${state.selectedRunId}`);
+    }
+    renderHeader();
+    renderRunsList();
+    if (state.view === "runs") renderRunDetail();
+    if (state.view === "loop") renderLoop();
+    updateDagStatuses();
+    if (state.selectedStep) renderInspector();
+  } catch (_) {
+    /* 网络抖动时静默，下一次轮询重试 */
+  }
+}
 
 boot();
 </script>

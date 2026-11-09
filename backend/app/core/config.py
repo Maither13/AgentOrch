@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     # 离线演示/单测开关：不发起真实请求
     llm_mock: bool = False
+    # Mock 模式下让评审固定驳回，用于演示 Self-Loop 轮次
+    mock_review_reject: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

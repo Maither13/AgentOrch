@@ -405,8 +405,7 @@ class DeepSeekClient:
         return LLMError(f"模型调用失败：{exc}", status_code=502, code="llm_error")
 
     # ---------------- mock ----------------
-    @staticmethod
-    def _mock_reply(messages: Sequence[Message]) -> str:
+    def _mock_reply(self, messages: Sequence[Message]) -> str:
         last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         if last_user.strip().lower().startswith("ping"):
             return "pong"
@@ -467,10 +466,11 @@ class DeepSeekClient:
             )
 
         if "评审 Agent（Reviewer）" in system:
+            verdict = "驳回" if self._settings.mock_review_reject else "通过"
             return (
                 "【MOCK 模式】验收完成（本地模拟）。\n\n"
-                "## 总体结论\n\n**通过**\n\n"
-                "模拟模式：所有验收标准视为通过，未调用真实模型。"
+                f"## 总体结论\n\n**{verdict}**\n\n"
+                "模拟模式：本轮结论由 MOCK_REVIEW_REJECT 控制。"
             )
 
         if "测试 Agent（Tester）" in system:
