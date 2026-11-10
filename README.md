@@ -37,7 +37,7 @@
 | 失败传播 | 上游失败 → 下游 `skipped`，无关任务继续执行 |
 | 离线 Mock | `LLM_MOCK=true` 时不发真实请求，单测与前端联调无需 Key |
 | 编排工作台 | `http://127.0.0.1:8000/`，画布 / 团队 / 运行时间线 / Self-Loop 四个视图 |
-| 单元测试 | 83 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
+| 单元测试 | 84 个用例，覆盖链路、角色、团队校验、依赖检查、调度状态机、拆解、工作区、Self-Loop、并行工作流与日志 |
 
 
 ## 前端工作台
@@ -48,11 +48,16 @@
 - **团队面板**：6 个 Agent 的角色、工具（占位工具虚化）与完整 system prompt
 - **运行监控**：运行列表、任务表（耗时 / token / pytest 退出码 / 可点击的交付文件）、执行时间线、验收阻断项
 - **Self-Loop**：首轮任务 + 每轮 `R<n>-fix` / `R<n>-test` / `R<n>-review` 三张卡，显示复评结论与是否转人工
-- 两种入口：固定工作流 / 队长拆解；运行中每 1.2 秒轮询，结束后自动停止轮询
+- 三种入口：固定工作流 / 队长拆解 / JSON 清单；JSON 清单先调 `/runs/validate` 校验，错误码会翻译成人话
+- 节点 inspector 展示工具调用留痕（工具名、参数摘要、结果摘要、成功/失败，可折叠）
 - 交付文件点开走 `GET /runs/{run_id}/file`，在工作区里安全读取（阻止路径穿越）
+- 队长拆解 / JSON 清单也走并行调度（`/runs` 传 `parallel=True` + `max_parallel`）
 
 ![编排画布](docs/ui-canvas.png)
 ![Self-Loop 轮次](docs/ui-selfloop.png)
+
+![工具调用留痕](docs/ui-inspector.png)
+![JSON 清单校验](docs/ui-json.png)
 
 其他截图：[运行监控](docs/ui-runs.png) · [团队面板](docs/ui-team.png)
 

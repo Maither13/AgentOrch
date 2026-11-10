@@ -238,9 +238,26 @@
   .round-verdict b { color: var(--text); }
   .initial-tasks { margin-bottom: 14px; }
 
+  .tool-call { border: 1px solid var(--line); border-radius: 8px; padding: 8px 9px; margin-top: 8px; background: var(--panel-2); }
+  .tool-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; }
+  .tool-kv { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .tool-kv code { display: block; margin-top: 3px; color: #b9c8e4; white-space: pre-wrap; word-break: break-all; max-height: 90px; overflow: auto; font-size: 10.5px; }
+  .tool-details { border-top: 0; padding-top: 0; margin-top: 0; }
+  .tool-details summary { margin-bottom: 2px; }
+
+  .json-panel { padding: 12px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .json-panel textarea {
+    width: 100%; min-height: 120px; resize: vertical; background: var(--panel-2);
+    border: 1px solid var(--line); color: var(--text); border-radius: 9px;
+    padding: 10px 12px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.6; outline: none;
+  }
+  .json-panel textarea:focus { border-color: rgba(79,140,255,.6); }
+  .json-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
   .repair-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 6px 2px; border-top: 1px dashed var(--line); margin-top: 8px; }
   .repair-round { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
-  .repair-node { padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+  .repair-node { padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); cursor: pointer; }
+  .repair-node:hover { border-color: rgba(79,140,255,.55); }
   .repair-arrow { color: #3b4c6e; }
   .blockers { margin: 8px 0 0; padding-left: 18px; color: #ffd2d2; font-size: 12px; line-height: 1.7; }
   .file-link { border: 0; background: transparent; padding: 0; color: #8fb4ff; font: inherit; font-size: 10.5px; text-align: left; cursor: pointer; }
@@ -294,6 +311,7 @@
           <select id="planMode" title="编排方式">
             <option value="workflow" selected>固定工作流</option>
             <option value="captain">队长拆解</option>
+            <option value="json">JSON 清单</option>
           </select>
           <select id="maxRounds" title="最大修复轮次">
             <option value="0">0 轮修复</option>
@@ -308,6 +326,14 @@
           </select>
           <button class="primary" id="startBtn">启动运行</button>
           <span id="runHint" class="small muted"></span>
+        </div>
+        <div id="jsonPanel" class="panel json-panel" hidden>
+          <textarea id="jsonInput" spellcheck="false" placeholder='[{"id":"T1","title":"需求","goal":"写需求文档","owner":"product_manager"},{"id":"T2","title":"实现","goal":"写代码","owner":"developer","depends_on":["T1"]}]'></textarea>
+          <div class="json-actions">
+            <button id="validateJsonBtn">校验 DAG</button>
+            <button class="primary" id="runJsonBtn">按清单运行</button>
+            <span id="jsonHint" class="small muted"></span>
+          </div>
         </div>
         <div class="canvas-layout">
           <div class="panel canvas-wrap">
@@ -355,6 +381,8 @@ const els = {
   goal: $("goalInput"), rounds: $("maxRounds"), parallel: $("maxParallel"), planMode: $("planMode"),
   start: $("startBtn"), hint: $("runHint"), refresh: $("refreshBtn"),
   dag: $("dag"), repairStrip: $("repairStrip"), inspector: $("inspector"),
+  jsonPanel: $("jsonPanel"), jsonInput: $("jsonInput"), validateJson: $("validateJsonBtn"),
+  runJson: $("runJsonBtn"), jsonHint: $("jsonHint"),
   fileModal: $("fileModal"), filePathLabel: $("filePathLabel"), fileBody: $("fileBody"), fileClose: $("fileClose"),
   teamGrid: $("teamGrid"), runList: $("runList"), runDetail: $("runDetail"),
   loopSummary: $("loopSummary"), loopRounds: $("loopRounds"),
@@ -420,13 +448,73 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
+    let code = null;
     try {
       const body = await response.json();
       message = body?.error?.message || JSON.stringify(body);
+      code = body?.error?.code || null;
     } catch (_) { /* ignore */ }
-    throw new Error(message);
+    const error = new Error(message);
+    error.code = code;
+    throw error;
   }
   return response.json();
+}
+
+
+const ERROR_TEXT = {
+  task_cycle: "任务依赖有环，请检查 depends_on 是否首尾相连",
+  task_unknown_owner: "负责人不存在，可用 captain / product_manager / architect / developer / tester / reviewer",
+  task_unknown_dependency: "依赖的任务不存在，请检查 depends_on 里的 id",
+  task_duplicate_id: "任务 id 重复",
+  task_self_dependency: "任务不能依赖自己",
+  task_duplicate_dependency: "同一个依赖被声明了多次",
+  task_list_empty: "任务清单为空",
+  task_too_many: "任务数量超过 20 个上限",
+  plan_parse_failed: "队长输出无法解析成任务清单",
+};
+
+function humanError(error) {
+  const hint = error.code && ERROR_TEXT[error.code];
+  return hint ? `${hint}（${error.message}）` : error.message;
+}
+
+function parseJsonTasks() {
+  const raw = els.jsonInput.value.trim();
+  if (!raw) throw new Error("请先粘贴 JSON 任务清单");
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`JSON 解析失败：${error.message}`);
+  }
+  const tasks = Array.isArray(data) ? data : data.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new Error("JSON 必须是任务数组，或包含非空 tasks 数组");
+  }
+  return tasks;
+}
+
+function syncPlanMode() {
+  const isJson = els.planMode.value === "json";
+  els.jsonPanel.hidden = !isJson;
+  els.goal.style.display = isJson ? "none" : "";
+  els.start.style.display = isJson ? "none" : "";
+  els.hint.textContent = isJson ? "粘贴任务清单，先校验 DAG 再运行" : "";
+}
+
+async function adoptRun(run) {
+  state.run = run;
+  state.selectedRunId = run.id;
+  state.selected = null;
+  state.runs = await api("/api/v1/runs?limit=12");
+  renderHeader();
+  renderRunsList();
+  renderRunDetail();
+  renderLoop();
+  renderCanvas();
+  startPolling();
+  switchView("canvas");
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -444,6 +532,7 @@ async function boot() {
     state.runs = runs;
 
     renderHeader();
+    syncPlanMode();
     renderCanvas();
     renderTeam();
     renderRunsList();
@@ -627,7 +716,7 @@ function renderRepairStrip() {
     return;
   }
   const statusChip = (task, label) => task
-    ? `<span class="repair-node">${label} ${esc(task.spec.id)} ${pill(task.status, TASK_LABEL)}</span>`
+    ? `<span class="repair-node" data-task-id="${esc(task.spec.id)}" title="点击查看任务详情">${label} ${esc(task.spec.id)} ${pill(task.status, TASK_LABEL)}</span>`
     : "";
   strip.innerHTML = rounds.map(([number, group]) => `
     <div class="repair-round">
@@ -640,6 +729,38 @@ function renderRepairStrip() {
       <span class="muted">判定：${esc(roundVerdict(state.run, number))}</span>
     </div>
   `).join("");
+}
+
+
+function taskDetailHtml(task) {
+  if (!task) return "";
+  const files = (task.files || []).map((file) =>
+    `<button class="chip file-link" data-path="${esc(file)}">${esc(file)}</button>`
+  ).join("");
+  const calls = (task.tool_calls || []).map((call, index) => `
+    <div class="tool-call">
+      <div class="tool-head">
+        <b>${index + 1}. ${esc(call.name)}</b>
+        <span class="pill ${call.ok ? "pass" : "err"}">${call.ok ? "成功" : "失败"}</span>
+      </div>
+      ${call.arguments ? `<div class="tool-kv"><span>参数</span><code>${esc(call.arguments)}</code></div>` : ""}
+      ${call.result ? `<div class="tool-kv"><span>结果</span><code>${esc(call.result)}</code></div>` : ""}
+    </div>`).join("");
+  return `
+    <section>
+      <h4>本次执行</h4>
+      <div class="kv"><span>耗时</span><span>${fmtMs(task.duration_ms)}</span></div>
+      <div class="kv"><span>Token</span><span>${task.usage?.total_tokens ?? 0}</span></div>
+      <div class="kv"><span>文件</span><span>${task.files?.length || 0} 个</span></div>
+      ${task.test_result ? `<div class="kv"><span>pytest</span><span>退出码 ${task.test_result.exit_code}</span></div>` : ""}
+    </section>
+    ${files ? `<section><h4>交付文件</h4><div class="chips">${files}</div></section>` : ""}
+    ${calls ? `<section><h4>工具调用（${task.tool_calls.length}）</h4>
+      <details class="tool-details"><summary>展开查看调用记录</summary>${calls}</details>
+    </section>` : ""}
+    ${task.error ? `<section><h4>错误</h4><div class="preview">${esc(task.error)}</div></section>` : ""}
+    ${task.output ? `<section><h4>输出摘要</h4><div class="preview">${esc(task.output.slice(0, 700))}</div></section>` : ""}
+  `;
 }
 
 function renderInspector() {
@@ -670,15 +791,7 @@ function renderInspector() {
         <h4>工具权限</h4>
         <div class="chips">${tools}</div>
       </section>
-      <section>
-        <h4>本次执行</h4>
-        <div class="kv"><span>耗时</span><span>${fmtMs(task.duration_ms)}</span></div>
-        <div class="kv"><span>Token</span><span>${task.usage?.total_tokens ?? 0}</span></div>
-        <div class="kv"><span>文件</span><span>${task.files?.length || 0} 个</span></div>
-        ${task.test_result ? `<div class="kv"><span>pytest</span><span>退出码 ${task.test_result.exit_code}</span></div>` : ""}
-      </section>
-      ${task.error ? `<section><h4>错误</h4><div class="preview">${esc(task.error)}</div></section>` : ""}
-      ${task.output ? `<section><h4>输出摘要</h4><div class="preview">${esc(task.output.slice(0, 700))}</div></section>` : ""}
+      ${taskDetailHtml(task)}
     `;
     return;
   }
@@ -702,17 +815,7 @@ function renderInspector() {
       <h4>工具权限</h4>
       <div class="chips">${tools}</div>
     </section>
-    ${task ? `
-      <section>
-        <h4>本次执行</h4>
-        <div class="kv"><span>耗时</span><span>${fmtMs(task.duration_ms)}</span></div>
-        <div class="kv"><span>Token</span><span>${task.usage?.total_tokens ?? 0}</span></div>
-        <div class="kv"><span>文件</span><span>${task.files?.length || 0} 个</span></div>
-        ${task.test_result ? `<div class="kv"><span>pytest</span><span>退出码 ${task.test_result.exit_code}</span></div>` : ""}
-      </section>
-      ${task.error ? `<section><h4>错误</h4><div class="preview">${esc(task.error)}</div></section>` : ""}
-      ${task.output ? `<section><h4>输出摘要</h4><div class="preview">${esc(task.output.slice(0, 700))}</div></section>` : ""}
-    ` : ""}
+    ${taskDetailHtml(task)}
   `;
 }
 
@@ -927,8 +1030,11 @@ els.start.addEventListener("click", async () => {
   els.start.disabled = true;
   els.hint.textContent = mode === "captain" ? "队长拆解中…" : "创建运行中…";
   try {
-    const payload = { goal, max_repair_rounds: Number(els.rounds.value) };
-    if (mode === "workflow") payload.max_parallel = Number(els.parallel.value);
+    const payload = {
+      goal,
+      max_repair_rounds: Number(els.rounds.value),
+      max_parallel: Number(els.parallel.value),
+    };
     const path = mode === "captain" ? "/api/v1/runs" : "/api/v1/workflows/software_development/runs";
     const run = await api(path, { method: "POST", body: JSON.stringify(payload) });
     state.run = run;
@@ -948,6 +1054,54 @@ els.start.addEventListener("click", async () => {
   } finally {
     els.start.disabled = false;
   }
+});
+
+els.planMode.addEventListener("change", syncPlanMode);
+
+els.validateJson.addEventListener("click", async () => {
+  els.jsonHint.textContent = "校验中…";
+  try {
+    const tasks = parseJsonTasks();
+    const result = await api("/api/v1/runs/validate", {
+      method: "POST",
+      body: JSON.stringify({ tasks }),
+    });
+    els.jsonHint.textContent = `校验通过：${result.order.join(" → ")}`;
+  } catch (error) {
+    els.jsonHint.textContent = `校验失败：${humanError(error)}`;
+  }
+});
+
+els.runJson.addEventListener("click", async () => {
+  els.jsonHint.textContent = "创建运行中…";
+  try {
+    const tasks = parseJsonTasks();
+    const run = await api("/api/v1/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        goal: els.goal.value.trim() || "自定义 DAG 运行",
+        tasks,
+        max_repair_rounds: Number(els.rounds.value),
+        max_parallel: Number(els.parallel.value),
+      }),
+    });
+    await adoptRun(run);
+    els.hint.textContent = `已启动 ${run.id}`;
+  } catch (error) {
+    els.jsonHint.textContent = `启动失败：${humanError(error)}`;
+  }
+});
+
+els.inspector.addEventListener("click", (event) => {
+  const link = event.target.closest(".file-link");
+  if (link) openFile(link.dataset.path);
+});
+
+els.repairStrip.addEventListener("click", (event) => {
+  const node = event.target.closest("[data-task-id]");
+  if (!node) return;
+  state.selected = { kind: "task", key: node.dataset.taskId };
+  renderInspector();
 });
 
 els.runList.addEventListener("click", (event) => {

@@ -100,6 +100,17 @@ def test_run_sequentially(client):
     assert summary["completed"] == 3
 
 
+def test_manual_tasks_use_parallel_dispatch(client):
+    tasks = [
+        {"id": "A", "title": "A", "goal": "写 A", "owner": "developer"},
+        {"id": "B", "title": "B", "goal": "写 B", "owner": "developer"},
+    ]
+    resp = client.post("/api/v1/runs?wait=true", json={"tasks": tasks, "max_parallel": 2})
+    assert resp.status_code == 200
+    logs = resp.json()["logs"]
+    assert any("并行层启动" in entry["message"] for entry in logs)
+
+
 def test_run_file_endpoint(client):
     resp = client.post("/api/v1/runs?wait=true", json={"tasks": TASKS})
     run_id = resp.json()["id"]

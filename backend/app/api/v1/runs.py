@@ -106,6 +106,8 @@ async def create_run(
             team,
             workspace=workspace,
             max_rounds=payload.max_repair_rounds,
+            parallel=True,
+            max_parallel=payload.max_parallel,
         )
     )
     store.track(execution)

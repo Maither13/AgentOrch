@@ -113,7 +113,7 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/runs?wait=true" `
 ## 5. 回归命令
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 83 个用例
+.\.venv\Scripts\python.exe -m pytest                 # 84 个用例
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --max-rounds 2
 .\.venv\Scripts\python.exe scripts\run_pipeline.py --goal "..." --mock
 ```

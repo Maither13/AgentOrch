@@ -142,6 +142,7 @@ class RunCreate(BaseModel):
     goal: str | None = Field(default=None, max_length=2_000)
     tasks: list[TaskSpec] | None = Field(default=None, min_length=1, max_length=20)
     max_repair_rounds: int = Field(default=3, ge=0, le=5, description="验收/测试失败后的最大修复轮次")
+    max_parallel: int = Field(default=3, ge=1, le=5, description="最大并行任务数")
 
     @model_validator(mode="after")
     def _require_input(self) -> "RunCreate":
