@@ -8,9 +8,9 @@
 固化下来，按拓扑层并行执行；模块 3 负责任务状态机、内存任务列表、依赖派发与 Agent 调用；
 模块 4 提供执行日志、测试执行、评审验收，并在测试失败/验收驳回时自动进入 Self-Loop。
 
-> 方案书 PDF（23 页，正文约 8000 字，含创新点清单）：[docs/AgentOrch方案书.pdf](docs/AgentOrch方案书.pdf)
+> 方案书 PDF（29 页）与运行截图随参赛材料单独提交；**本仓库只含可运行代码、测试与样例产物**。
 
-![编排工作台](docs/console.png)
+> 运行截图见参赛材料。本地启动后访问 `http://127.0.0.1:8000` 即为同一界面。
 
 ---
 
@@ -55,13 +55,7 @@
 - 交付文件点开走 `GET /runs/{run_id}/file`，在工作区里安全读取（阻止路径穿越）
 - 队长拆解 / JSON 清单也走并行调度（`/runs` 传 `parallel=True` + `max_parallel`）
 
-![编排画布](docs/ui-canvas.png)
-![Self-Loop 轮次](docs/ui-selfloop.png)
-
-![工具调用留痕](docs/ui-inspector.png)
-![JSON 清单校验](docs/ui-json.png)
-
-其他截图：[运行监控](docs/ui-runs.png) · [团队面板](docs/ui-team.png)
+> 编排画布、Self-Loop 轮次、节点 inspector、JSON 清单校验、运行监控、团队面板六组截图见参赛材料。
 
 ## 模块 1：Agent 定义与配置
 
@@ -337,7 +331,7 @@ curl.exe http://127.0.0.1:8000/api/v1/runs/{run_id}/logs
 实测：在一个 12 个用例的交付工作区里，测试 Agent 调用 `test_runner` 实际执行 pytest，
 工作区生成 `.pytest_cache`，报告 `12 passed`。
 
-完整的可验证清单见 [docs/verification.md](docs/verification.md)（含「故意制造失败」的降级测试）。
+完整的可验证清单随参赛材料提交（含「故意制造失败」的降级测试）。
 
 实测：一句需求拆 5 个任务，下游 context 只有 47–480 字符，工作区落盘 14 个真实文件，
 评审「有条件通过」被正确解析为 `passed`，run 状态 `completed`。
@@ -442,9 +436,8 @@ AgentOrch/
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── run.py                   # python run.py
-├── docs/
-│   ├── console.png              # 联调台截图
-│   └── verification.md          # 验收与 Self-Loop 验证清单
+├── samples/                     # 两个真实运行的工作区快照
+├── LICENSE
 └── README.md
 ```
 
@@ -609,4 +602,4 @@ cd AgentOrch\backend
 4. **实时推送**：WebSocket 事件总线，前端监控面板接入
 5. **前端编排画布**：Vue 3 + AntV X6，拖拽生成工作流
 
-> 详细设计见《AgentOrch_设计方案.docx》，验证步骤见 [docs/verification.md](docs/verification.md)。
+> 详细设计见方案书 PDF（随参赛材料提交）；验证步骤见 `backend/tests/` 与本附录清单。
