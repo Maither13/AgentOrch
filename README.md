@@ -8,6 +8,8 @@
 固化下来，按拓扑层并行执行；模块 3 负责任务状态机、内存任务列表、依赖派发与 Agent 调用；
 模块 4 提供执行日志、测试执行、评审验收，并在测试失败/验收驳回时自动进入 Self-Loop。
 
+> 方案书 PDF（19 页，正文约 6000 字）：[docs/AgentOrch方案书.pdf](docs/AgentOrch方案书.pdf)
+
 ![编排工作台](docs/console.png)
 
 ---
